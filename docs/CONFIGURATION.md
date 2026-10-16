@@ -40,9 +40,9 @@
 | 字段 | 类型 | 默认值 | 可选值 / 约束 | 说明 |
 | --- | --- | --- | --- | --- |
 | `mode` | string | `follow_local` | `follow_local`, `custom` | 默认跟随当前用户 `~/.codex`。`custom` 用于指定兼容 CLI 或配置目录。 |
-| `submission_mode` | string | `native_queue` | `native_queue`, `direct`, `desktop_queue` | 推荐 `native_queue`，即当前桌面会话输入。`direct` 表示 Codex App Server 直接提交。`desktop_queue` 是兼容值，不建议手工填写。 |
-| `auto_switch_thread` | bool | `false` | `true`, `false` | 允许桌面输入模式切换到消息所属的已加载 Codex 会话。按会话 ID 定位目标。目标草稿的处理取决于草稿保留开关；关闭保留时等待，开启时仅在加密备份及复核通过后处理可支持的纯文本。 |
-| `preserve_desktop_draft` | bool | `false` | `true`, `false` | 兼容模式下先加密备份可确认的纯文本草稿，再优先提交飞书任务。仅限桌面输入模式，重要草稿不建议依赖。 |
+| `submission_mode` | string | `native_queue` | `native_queue`, `direct`, `desktop_queue` | 推荐 `native_queue`，通过桌面所属连接按会话 ID 提交，不操作当前输入框。`direct` 表示 Codex App Server 直接提交。`desktop_queue` 是兼容值，不建议手工填写。 |
+| `auto_switch_thread` | bool | `false` | `true`, `false` | 旧输入框兼容路径的导航设置。当前正式桌面提交按会话 ID 调用，不依赖此设置切换窗口。 |
+| `preserve_desktop_draft` | bool | `false` | `true`, `false` | 旧输入框兼容路径的草稿保护设置。当前正式提交不读写输入框草稿；未知提交结果不会回退到输入框重发。 |
 | `auto_restore_desktop_draft` | bool | `false` | `true`, `false` | 实验功能。仅在 `preserve_desktop_draft` 开启时才可能生效；默认必须保持关闭。 |
 | `binary` | string | 空 | `custom` 模式可填 | Codex CLI 路径或可在 `PATH` 中找到的名称。留空时自动发现。`follow_local` 模式会清空该字段。 |
 | `home` | string | 空 | `custom` 模式可填 | `CODEX_HOME` 目录。留空使用 `~/.codex`；必须是实际 Codex 配置目录。`follow_local` 模式会清空该字段。 |
@@ -87,8 +87,8 @@
 
 | 字段 | 类型 | 默认值 | 允许范围 | 说明 |
 | --- | --- | --- | --- | --- |
-| `turn_timeout_seconds` | int | `900` | 30–7200 | 单轮任务超时。 |
-| `approval_timeout_seconds` | int | `300` | 15–1800 | 审批等待超时。 |
+| `turn_timeout_seconds` | int | `900` | 30–7200 | 创建会话资源阶段的操作超时，不是等待用户授权的时限。 |
+| `approval_timeout_seconds` | int | `0` | `0`，兼容导入 15–1800 | 废弃的兼容字段，不再控制等待时间。授权、提问选择和表单不设等待有效期；网络请求仍有独立超时。 |
 | `max_message_chars` | int | `2000` | 200–3000 | 单条 IM 输出消息的字符上限。 |
 | `max_input_chars` | int | `24000` | 1–64000 | 发送给任务的输入字符上限。 |
 | `queue_size` | int | `32` | 1–512 | 每会话等待容量。 |
@@ -141,7 +141,7 @@
   ],
   "limits": {
     "turn_timeout_seconds": 900,
-    "approval_timeout_seconds": 300,
+    "approval_timeout_seconds": 0,
     "max_message_chars": 2000,
     "max_input_chars": 24000,
     "queue_size": 32,
