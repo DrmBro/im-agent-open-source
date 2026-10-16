@@ -2,6 +2,8 @@
 
 本文面向在自己 macOS 设备上构建、部署和维护 IM Agent 的用户。部署前请确认你理解以下前提：IM Agent 不提供模型账号，不托管你的 Codex 或飞书应用；所有凭证、会话、数据库和任务都保存在本机。
 
+首次部署优先按 [首次配置指南](GETTING_STARTED.md) 操作；让 AI 协助时使用 [AI 配置引导词](AI_SETUP.md)。本文补充构建、升级与维护细节。
+
 ## 1. 支持范围与依赖
 
 | 项目 | 要求 |
@@ -12,7 +14,7 @@
 | Apple 工具链 | Xcode Command Line Tools |
 | Codex | 用户自行安装、登录并验证可用 |
 | 飞书 | 用户自己的自建应用，使用官方长连接 |
-| Node.js | 前端为静态资源，无需 npm 构建 |
+| Node.js | 前端没有 npm 构建脚本；开发工具依赖以固定版本的 `wails doctor` 检查为准 |
 
 先检查基础环境：
 
@@ -37,7 +39,7 @@ go install github.com/wailsapp/wails/v2/cmd/wails@v2.12.0
 
 ```bash
 git clone https://github.com/DrmBro/im-agent-open-source.git
-cd im-agent
+cd im-agent-open-source
 go mod download
 GOFLAGS=-trimpath wails build -clean
 ```
@@ -88,6 +90,8 @@ $HOME/Library/Application Support/IM Agent
 不要复制、发送或上传 `desktop.sqlite`、`runtime/`、日志、钥匙串导出或备份目录。升级前应在本机保留备份；迁移到新机器时需要同时恢复钥匙串访问，否则已有密文无法解密。
 
 ## 5. 首次配置
+
+Codex 版本兼容、飞书具体权限/事件、网络与钥匙串授权的检查条件见 [首次配置指南](GETTING_STARTED.md)。以下是摘要，不替代首次收发验收。
 
 ### 5.1 Codex
 
@@ -142,8 +146,8 @@ $HOME/Library/Application Support/IM Agent
 1. 在概览点击“启动桥接”。
 2. 确认后台状态为运行中。
 3. 确认飞书连接状态为已连接。
-4. 在白名单账号的测试会话中发送 `/status`，确认只读状态卡或状态回复可用。
-5. 发送 `/new` 创建新的测试会话，或在已有测试会话发送一个无敏感内容的问题。
+4. 使用同时在白名单和管理员列表中的账号，私聊机器人发送 `/new`。
+5. 填写表单首问并仅点击一次“创建并开始”；首问会自动尝试执行，进入新群等待回复，不要把首问再发一次。已有绑定会话可用 `/status` 查看状态。
 6. 检查模型回复、状态卡、附件和投递回执符合预期。
 7. 验证关闭客户端窗口后后台仍在运行；需要停止时回到概览点击“停止桥接”。
 

@@ -11,7 +11,7 @@ IM Agent 是一个本地优先的 macOS 桌面客户端，用于把 IM 消息安
 - 会话管理：支持独立群和共享群话题，保存会话映射、历史游标、投递账本与状态卡消息 ID。
 - Codex 集成：默认跟随本机 `~/.codex` 配置，不接管模型账号；也可在高级模式指定兼容 CLI 或配置目录。
 - 队列与回执：限制并发、超时和消息长度；对已提交、等待执行、完成、失败和送达不确定等状态分开记录。
-- 本地凭证保护：飞书 App Secret 等凭证经系统钥匙串派生密钥后加密保存到本机 SQLite，不在界面回显，也不通过环境变量自动注入。
+- 本地凭证保护：飞书 App Secret 等凭证使用保存在系统钥匙串中的随机主密钥加密保存到本机 SQLite，不在界面回显，也不通过环境变量自动注入。
 - Alfred 辅助入口：提供打开客户端或只启动后台的固定入口，不依赖 Spotlight 索引。
 
 ## 架构概览
@@ -39,14 +39,21 @@ internal/codex（Codex App Server / 桌面输入集成）
 - 已安装并可用、已登录的 Codex；IM Agent 不配置模型认证。
 - 一个由你控制的飞书自建应用，具备消息、卡片、群/话题和附件所需权限。
 
+## 首次使用与 AI 引导
+
+首次使用请按 [首次配置指南](docs/GETTING_STARTED.md) 逐步确认环境、飞书应用、桌面入口和第一条回复。希望由 AI 帮助时，复制 [AI 配置引导词](docs/AI_SETUP.md) 给它；每次只执行当前一步，密钥只在本机填写。
+
+支持范围：当前以 macOS Apple Silicon 为主要目标；没有经过全新机器验证的 Codex 版本兼容矩阵。CLI 被发现、飞书已连接、桌面入口可用、模型完成、回复送达是不同状态，只有实际完成首次收发才能确认本机可用。
+
 ## 快速开始
 
 ```bash
 git clone https://github.com/DrmBro/im-agent-open-source.git
-cd im-agent
+cd im-agent-open-source
 
 go version
 go install github.com/wailsapp/wails/v2/cmd/wails@v2.12.0
+export PATH="$(go env GOPATH)/bin:$PATH"
 wails doctor
 
 GOFLAGS=-trimpath wails build -clean

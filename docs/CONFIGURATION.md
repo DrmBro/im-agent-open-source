@@ -4,6 +4,8 @@
 
 > 不要把 `config.json`、`desktop.sqlite`、钥匙串导出、日志或业务数据库提交到 Git，也不要发送给他人。`config.json.example` 只用于旧 JSON 导入预览，运行时不会从明文 JSON 或环境变量读取飞书凭证。
 
+首次使用先阅读 [首次配置指南](GETTING_STARTED.md)，其中包含外部权限、版本兼容及首条任务验证；本文提供字段参考。
+
 ## 配置入口与生效方式
 
 | 操作 | 位置 |
@@ -39,14 +41,14 @@
 | --- | --- | --- | --- | --- |
 | `mode` | string | `follow_local` | `follow_local`, `custom` | 默认跟随当前用户 `~/.codex`。`custom` 用于指定兼容 CLI 或配置目录。 |
 | `submission_mode` | string | `native_queue` | `native_queue`, `direct`, `desktop_queue` | 推荐 `native_queue`，即当前桌面会话输入。`direct` 表示 Codex App Server 直接提交。`desktop_queue` 是兼容值，不建议手工填写。 |
-| `auto_switch_thread` | bool | `false` | `true`, `false` | 允许桌面输入模式切换到消息所属的已加载 Codex 会话。切换前会核对会话 ID；有未发送草稿时会等待或拒绝，不会覆盖草稿。 |
+| `auto_switch_thread` | bool | `false` | `true`, `false` | 允许桌面输入模式切换到消息所属的已加载 Codex 会话。按会话 ID 定位目标。目标草稿的处理取决于草稿保留开关；关闭保留时等待，开启时仅在加密备份及复核通过后处理可支持的纯文本。 |
 | `preserve_desktop_draft` | bool | `false` | `true`, `false` | 兼容模式下先加密备份可确认的纯文本草稿，再优先提交飞书任务。仅限桌面输入模式，重要草稿不建议依赖。 |
 | `auto_restore_desktop_draft` | bool | `false` | `true`, `false` | 实验功能。仅在 `preserve_desktop_draft` 开启时才可能生效；默认必须保持关闭。 |
 | `binary` | string | 空 | `custom` 模式可填 | Codex CLI 路径或可在 `PATH` 中找到的名称。留空时自动发现。`follow_local` 模式会清空该字段。 |
 | `home` | string | 空 | `custom` 模式可填 | `CODEX_HOME` 目录。留空使用 `~/.codex`；必须是实际 Codex 配置目录。`follow_local` 模式会清空该字段。 |
 | `model` | string | 空 | `custom` 模式可填 | 旧版兼容模型覆盖。推荐留空，让 Codex 使用本机配置。`follow_local` 模式会清空该字段。 |
 | `sandbox` | string | `workspace-write` | `read-only`, `workspace-write` | 不允许无沙箱模式。 |
-| `approval_policy` | string | `untrusted` | `untrusted`, `on-request` | 不支持更宽松的审批策略。 |
+| `approval_policy` | string | `untrusted` | `untrusted`, `on-request` | 保存仅支持这两个值。若 CLI 帮助不再包含 `untrusted`，运行时收紧为 `on-request` + `read-only`，不修改已保存配置；详见首次配置指南。 |
 | `cdp_port` | int | `0` | `0` 或有效本机端口号 | 桌面 CDP 首选端口。`0` 表示自动探测；程序还会探测本机 9222–9235。端口必须只监听回环地址。 |
 
 ## IM 连接配置
