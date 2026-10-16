@@ -74,7 +74,15 @@ func (c *Client) CreationCatalog(ctx context.Context) (CreationCatalog, error) {
 		}
 		cursor = *data.NextCursor
 	}
-	cursor = ""
+	models, err := c.Models(ctx)
+	out.Models = models
+	return out, err
+}
+
+// Models 独立读取模型目录，模型切换不依赖项目列表。
+func (c *Client) Models(ctx context.Context) ([]ModelChoice, error) {
+	models := []ModelChoice{}
+	cursor := ""
 	for page := 0; page < 10; page++ {
 		params := map[string]any{"limit": 100, "includeHidden": false}
 		if cursor != "" {
@@ -82,7 +90,7 @@ func (c *Client) CreationCatalog(ctx context.Context) (CreationCatalog, error) {
 		}
 		raw, e := c.Call(ctx, "model/list", params)
 		if e != nil {
-			return out, e
+			return models, e
 		}
 		var data struct {
 			Data []struct {
@@ -97,7 +105,7 @@ func (c *Client) CreationCatalog(ctx context.Context) (CreationCatalog, error) {
 			NextCursor *string `json:"nextCursor"`
 		}
 		if json.Unmarshal(raw, &data) != nil || data.Data == nil {
-			return out, errors.New("Codex 模型目录响应无效")
+			return models, errors.New("Codex 模型目录响应无效")
 		}
 		for _, m := range data.Data {
 			if m.Hidden || m.Model == "" {
@@ -110,23 +118,23 @@ func (c *Client) CreationCatalog(ctx context.Context) (CreationCatalog, error) {
 			if len(choice.Efforts) == 0 {
 				continue
 			}
-			out.Models = append(out.Models, choice)
-			if len(out.Models) > 100 {
-				return out, errors.New("模型目录超过表单上限")
+			models = append(models, choice)
+			if len(models) > 100 {
+				return models, errors.New("模型目录超过表单上限")
 			}
 		}
 		if data.NextCursor == nil || *data.NextCursor == "" {
 			break
 		}
 		if *data.NextCursor == cursor || page == 9 {
-			return out, errors.New("模型目录分页异常")
+			return models, errors.New("模型目录分页异常")
 		}
 		cursor = *data.NextCursor
 	}
-	if len(out.Models) == 0 {
-		return out, errors.New("Codex 未返回可选模型能力，未编造选项")
+	if len(models) == 0 {
+		return models, errors.New("Codex 未返回可选模型能力，未编造选项")
 	}
-	return out, nil
+	return models, nil
 }
 func (c CreationCatalog) Validate(s CreationSelection) (ProjectChoice, error) {
 	var project ProjectChoice

@@ -161,7 +161,7 @@ func (c *Client) Start(ctx context.Context, onMessage func(context.Context, im.M
 		}
 		// 核心仅做本机校验和排队，不在回调内等待建群或模型。
 		if e := onAction(ctx, im.Interaction{Fields: fields, Address: a, MessageID: v.Context.OpenMessageID, UserID: uid, ActionID: id, Choice: choice}); e != nil {
-			if strings.HasPrefix(id, "new:") {
+			if strings.HasPrefix(id, "new:") || strings.HasPrefix(id, "session:") || strings.HasPrefix(id, "session-form:") {
 				return &callback.CardActionTriggerResponse{Toast: &callback.Toast{Type: "error", Content: redact.Clip(diagnostics.Error(e), 100)}}, nil
 			}
 			return reject(), nil

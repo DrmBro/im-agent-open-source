@@ -9,6 +9,7 @@ import (
 	"regexp"
 	"time"
 
+	"im-agent/internal/redact"
 	"im-agent/internal/telemetry"
 )
 
@@ -91,9 +92,10 @@ func applyRequestTelemetry(state *telemetry.State, thread, kind string, raw json
 	switch kind {
 	case "event_msg":
 		var event struct {
-			Type   string `json:"type"`
-			TurnID string `json:"turn_id"`
-			Last   string `json:"last_agent_message"`
+			Type   string          `json:"type"`
+			TurnID string          `json:"turn_id"`
+			Last   string          `json:"last_agent_message"`
+			Error  json.RawMessage `json:"error"`
 			Info   *struct {
 				Last   *telemetry.Usage `json:"last_token_usage"`
 				Window *int64           `json:"model_context_window"`
@@ -127,6 +129,13 @@ func applyRequestTelemetry(state *telemetry.State, thread, kind string, raw json
 			}
 			if state.Snapshot.EndedAt == 0 {
 				state.Snapshot.EndedAt = at
+			}
+			state.Snapshot.Outcome = "completed"
+			if event.Type == "turn_aborted" {
+				state.Snapshot.Outcome = "interrupted"
+			}
+			if hasCompletionError(event.Error) {
+				state.Snapshot.Outcome = "failed"
 			}
 			telemetryActivity(state, at, event.Type)
 		}
@@ -176,6 +185,7 @@ func applyRequestTelemetry(state *telemetry.State, thread, kind string, raw json
 					return true, nil
 				}
 				state.MatchedTurn = actual
+				state.Snapshot.TurnID = actual
 				if actual == state.CurrentTurn {
 					if state.Snapshot.StartedAt == 0 {
 						state.Snapshot.StartedAt = state.CurrentStartedAt
@@ -201,6 +211,10 @@ func applyRequestTelemetry(state *telemetry.State, thread, kind string, raw json
 				}
 			}
 			if actual == state.MatchedTurn && item.ID != "" {
+				if text, supported := exactReplyText(item.Content); supported && text != "" {
+					state.Snapshot.Preview = publicPreview(redact.New().Text(text))
+					state.Snapshot.PreviewAt = at
+				}
 				if state.Snapshot.FirstOutputAt == 0 || at < state.Snapshot.FirstOutputAt {
 					state.Snapshot.FirstOutputAt = at
 				}

@@ -153,6 +153,10 @@ func New(dir string) (*Store, error) {
 		db.Close()
 		return nil, e
 	}
+	if e = s.migrateSessionControls(); e != nil {
+		db.Close()
+		return nil, e
+	}
 	if e = s.migrateHistoryRetention(); e != nil {
 		db.Close()
 		return nil, e

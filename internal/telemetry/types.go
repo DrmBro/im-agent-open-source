@@ -29,6 +29,10 @@ func (usage *Usage) Equal(other *Usage) bool {
 }
 
 type Snapshot struct {
+	TurnID                   string `json:"turn_id,omitempty"`
+	Preview                  string `json:"preview,omitempty"`
+	PreviewAt                int64  `json:"preview_at,omitempty"`
+	Outcome                  string `json:"outcome,omitempty"`
 	Model                    string `json:"model,omitempty"`
 	StartedAt                int64  `json:"started_at,omitempty"`
 	FirstOutputAt            int64  `json:"first_output_at,omitempty"`

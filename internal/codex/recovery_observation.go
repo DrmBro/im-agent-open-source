@@ -79,9 +79,10 @@ func (c *Client) ReadRecoveryObservation(ctx context.Context, thread, path strin
 		switch r.Type {
 		case "event_msg":
 			var ev struct {
-				Type   string `json:"type"`
-				TurnID string `json:"turn_id"`
-				Last   string `json:"last_agent_message"`
+				Type   string          `json:"type"`
+				TurnID string          `json:"turn_id"`
+				Last   string          `json:"last_agent_message"`
+				Error  json.RawMessage `json:"error"`
 			}
 			if json.Unmarshal(r.Payload, &ev) != nil {
 				return state, offset, errors.New("恢复观察轮次事件无效")
@@ -92,6 +93,10 @@ func (c *Client) ReadRecoveryObservation(ctx context.Context, thread, path strin
 			if ev.TurnID != "" && ev.TurnID == state.MatchedTurn {
 				switch ev.Type {
 				case "task_complete":
+					if hasCompletionError(ev.Error) {
+						state.Outcome = "failed"
+						return state, next, nil
+					}
 					if state.ReplyIssue == "turn_conflict" && state.CurrentTurn == state.MatchedTurn &&
 						state.MatchedUserCount == 1 && state.FinalCount == 1 && state.FinalCandidate.ItemID != "" &&
 						ev.Last != "" && storeHash(ev.Last) == state.FinalCandidate.Fingerprint {

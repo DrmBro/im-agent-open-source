@@ -36,6 +36,10 @@ func readonlySessionCard(view store.SessionStatus, _ time.Time) im.Card {
 	switch {
 	case view.Task.ID == "":
 		state = "尚无请求记录"
+	case view.Telemetry != nil && view.Telemetry.Snapshot.Outcome == "failed":
+		state = "本轮响应失败"
+	case view.Telemetry != nil && view.Telemetry.Snapshot.Outcome == "interrupted":
+		state = "本轮已中断"
 	case result != nil && result.Delivery == "sent":
 		state = "已回复"
 	case result != nil && result.Execution == "completed" && result.Delivery == "awaiting_replies":
@@ -113,7 +117,7 @@ func (b *Bridge) refreshRequestStatus(ctx context.Context, thread string, force 
 		return e
 	}
 	session := view.Session
-	if session.Status != "active" || !session.Managed || session.Address.IsTopic() {
+	if session.Status != "active" || !session.Managed {
 		return nil
 	}
 	a := b.channels[session.Address.Connection]
@@ -129,6 +133,9 @@ func (b *Bridge) refreshRequestStatus(ctx context.Context, thread string, force 
 	}
 	if errors.Is(e, sql.ErrNoRows) {
 		enabled, e := b.store.StatusCardsEnabledAt()
+		if e == nil && session.Address.IsTopic() {
+			enabled, e = b.store.ControlCardsEnabledAt()
+		}
 		if e != nil {
 			return e
 		}
@@ -146,8 +153,15 @@ func (b *Bridge) refreshRequestStatus(ctx context.Context, thread string, force 
 			return nil
 		}
 	}
+	// 编辑模型表单时冻结原卡，防止定时刷新重置用户尚未提交的选择。
+	if !force {
+		if _, err := b.store.OpenModelControl(thread, view.Task.ID); err == nil {
+			return nil
+		}
+	}
 	card := readonlySessionCard(view, time.Now())
 	b.addTaskDelivery(ctx, view, &card)
+	b.addSessionControls(view, &card)
 	card.Text = b.presentationFilter().Text(card.Text)
 	// 包含动作身份和按钮，不能因为正文相同而漏掉交付入口的更新。
 	digest := store.Hash(store.JSON(card))
@@ -259,9 +273,7 @@ func (b *Bridge) syncSessionStatusCards(ctx context.Context) {
 				if ctx.Err() != nil {
 					return
 				}
-				if s.Address.IsTopic() {
-					continue
-				}
+
 				requests, readErr := b.store.PendingSessionStatusRequests(s)
 				if readErr != nil {
 					b.log.Warn("读取请求状态卡失败", "thread", s.ThreadID, "error", diagnostics.Error(readErr))
@@ -292,7 +304,7 @@ func (b *Bridge) sessionStatusCommand(ctx context.Context, a im.Adapter, msg im.
 		_, e = a.SendText(ctx, msg.Address, "会话已归档、关闭中或停用，不更新状态卡。", msg.ID)
 		return e
 	}
-	if !s.Managed || s.Address.IsTopic() || !a.Capabilities().InteractiveCards || !a.Capabilities().UpdateCard {
+	if !s.Managed || !a.Capabilities().InteractiveCards || !a.Capabilities().UpdateCard {
 		view, e := b.store.ReadSessionStatus(s.ThreadID)
 		if e != nil {
 			return e
@@ -316,8 +328,8 @@ func (b *Bridge) OpenSessionStatusForThread(ctx context.Context, thread string) 
 	if e != nil {
 		return e
 	}
-	if s.Status != "active" || !s.Managed || s.Address.IsTopic() {
-		return diagnostics.UserError("请选择活跃的独立会话群")
+	if s.Status != "active" || !s.Managed {
+		return diagnostics.UserError("请选择活跃的会话群或话题")
 	}
 	return b.enqueueSessionStatus(thread, true)
 }
@@ -334,7 +346,7 @@ func (b *Bridge) notifyStatusCardFailure(parent context.Context, thread string, 
 	} else {
 		view, e = b.store.ReadSessionStatus(thread)
 	}
-	if e != nil || view.Session.Status != "active" || !view.Session.Managed || view.Session.Address.IsTopic() {
+	if e != nil || view.Session.Status != "active" || !view.Session.Managed {
 		return
 	}
 	session := view.Session

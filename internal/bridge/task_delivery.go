@@ -107,12 +107,12 @@ func (b *Bridge) reportInteractionSession(in im.Interaction) (store.Session, str
 		return store.Session{}, "", diagnostics.UserError("无权获取此任务报告")
 	}
 	event := strings.TrimPrefix(in.ActionID, "report:")
-	s, err := b.store.ByChat(in.Address)
-	if err != nil || s.Status != "active" || s.Address.Key() != in.Address.Key() || !validTaskReportRequest(SendTaskReportRequest{s.ThreadID, event}) {
+	s, err := b.store.SessionForControlCard(in.Address, in.MessageID, event)
+	if err != nil || s.Status != "active" || s.Address.BaseKey() != in.Address.BaseKey() || !validTaskReportRequest(SendTaskReportRequest{s.ThreadID, event}) {
 		return store.Session{}, "", diagnostics.UserError("报告卡片与当前活跃会话不一致")
 	}
 	card, err := b.store.StatusCard(s.ThreadID, event)
-	if err != nil || card.State != "sent" || card.MessageID == "" || card.MessageID != in.MessageID || card.AddressKey != store.Hash(in.Address.Key()) {
+	if err != nil || card.State != "sent" || card.MessageID == "" || card.MessageID != in.MessageID || card.AddressKey != store.Hash(s.Address.Key()) {
 		return store.Session{}, "", diagnostics.UserError("任务报告卡片回执或绑定不匹配，未发送")
 	}
 	return s, event, nil

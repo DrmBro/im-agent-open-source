@@ -4,7 +4,9 @@ import (
 	"bytes"
 	"context"
 	"errors"
+	"os"
 	"os/exec"
+	"path/filepath"
 	"strings"
 	"time"
 
@@ -20,6 +22,10 @@ func PreparePolicy(parent context.Context, cfg config.Config) (config.Config, st
 	ctx, cancel := context.WithTimeout(parent, 5*time.Second)
 	defer cancel()
 	command := exec.CommandContext(ctx, cfg.Codex.Binary, "--help")
+	// 与 Start 的 CLI 环境一致：登录后台的 PATH 不一定包含 npm 脚本需要的同目录 node。
+	if filepath.IsAbs(cfg.Codex.Binary) {
+		command.Env = setEnv(os.Environ(), "PATH", filepath.Dir(cfg.Codex.Binary)+string(os.PathListSeparator)+os.Getenv("PATH"))
+	}
 	var output bytes.Buffer
 	command.Stdout = &output
 	if e := command.Run(); e != nil {

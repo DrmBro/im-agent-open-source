@@ -466,7 +466,7 @@ $('send-file').onclick=()=>task(async()=>{
 });
 refreshBackground().catch(()=>{});
 
-$('session-status').onclick=()=>task(async()=>{if(!fileThread)throw new Error('请先选择会话群');await api().OpenSessionStatus(fileThread);note('已请求显示或刷新只读会话状态卡，没有执行模型任务。');});
+$('session-status').onclick=()=>task(async()=>{if(!fileThread)throw new Error('请先选择会话群或话题');await api().OpenSessionStatus(fileThread);note('已请求显示或刷新会话小卡片；仅显示卡片不会启动或中断任务。');});
 
 
 // 桌面连接管理只由用户点击触发，不纳入自动刷新或任务重放。

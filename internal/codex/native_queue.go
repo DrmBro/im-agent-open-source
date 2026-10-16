@@ -401,13 +401,13 @@ func (c *Client) desktopQueueTurn(ctx context.Context, threadID, text string, ho
 	return watch(), nil
 }
 
-func (c *Client) watchDesktopTurn(ctx context.Context, threadID, turnID, input string, rolloutPath string, rolloutOffset int64) {
+func (c *Client) watchDesktopTurn(ctx context.Context, threadID, turnID, input string, rolloutPath string, rolloutOffset int64, actualTurn ...string) {
 	defer func() { c.nativeMu.Lock(); delete(c.desktopTurns, threadID); c.nativeMu.Unlock() }()
 	if rolloutPath == "" {
 		c.sendDesktopObservationStopped(threadID, turnID)
 		return
 	}
-	if !readDesktopRolloutUntil(ctx, rolloutPath, rolloutOffset, turnID, input, c, threadID) && ctx.Err() != context.Canceled {
+	if !readDesktopRolloutUntil(ctx, rolloutPath, rolloutOffset, turnID, input, c, threadID, actualTurn...) && ctx.Err() != context.Canceled {
 		c.sendDesktopObservationStopped(threadID, turnID)
 	}
 }
@@ -491,7 +491,7 @@ func findDesktopRollout(home, threadID string) (string, int64) {
 }
 
 // 只接受提交后真实用户条目所属轮次的完成事件，不能拿提交前正在执行的轮次作为回执。
-func readDesktopRolloutUntil(ctx context.Context, path string, offset int64, turnID, expected string, c *Client, threadID string) bool {
+func readDesktopRolloutUntil(ctx context.Context, path string, offset int64, turnID, expected string, c *Client, threadID string, actualTurn ...string) bool {
 	currentTurn, matchedTurn, final, finalID := "", "", "", ""
 	observedTurn := false
 	ticker := time.NewTicker(500 * time.Millisecond)
@@ -533,9 +533,10 @@ func readDesktopRolloutUntil(ctx context.Context, path string, offset int64, tur
 			}
 			if r.Type == "event_msg" {
 				var ev struct {
-					Type   string `json:"type"`
-					TurnID string `json:"turn_id"`
-					Last   string `json:"last_agent_message"`
+					Type   string          `json:"type"`
+					TurnID string          `json:"turn_id"`
+					Last   string          `json:"last_agent_message"`
+					Error  json.RawMessage `json:"error"`
 				}
 				if json.Unmarshal(r.Payload, &ev) != nil {
 					continue
@@ -559,6 +560,11 @@ func readDesktopRolloutUntil(ctx context.Context, path string, offset int64, tur
 						return true
 					}
 					if ev.Type == "task_complete" {
+						if hasCompletionError(ev.Error) {
+							f.Close()
+							c.sendDesktopTurnFailure(threadID, turnID, "桌面本轮响应中断或返回错误，可能已有部分操作完成")
+							return true
+						}
 						if ev.Last != "" {
 							if finalID != "" && final != ev.Last {
 								f.Close()
@@ -621,7 +627,7 @@ func readDesktopRolloutUntil(ctx context.Context, path string, offset int64, tur
 					if actual == "" {
 						actual = currentTurn
 					}
-					if actual != "" {
+					if actual != "" && (len(actualTurn) == 0 || actualTurn[0] == actual) {
 						matchedTurn = actual
 					}
 				}

@@ -173,6 +173,9 @@ const statusRequestVersionSQL = "e.status || '/' || e.stage || '/' || e.updated_
 // 每条events.id是独立请求。包含两次扫描之间已完成的短请求，不只挑当前最新请求。
 func (s *Store) PendingSessionStatusRequests(session Session) ([]string, error) {
 	enabled, e := s.StatusCardsEnabledAt()
+	if e == nil && session.Address.IsTopic() {
+		enabled, e = s.ControlCardsEnabledAt()
+	}
 	if e != nil {
 		return nil, e
 	}
@@ -186,7 +189,8 @@ WHERE e.chat_key = ?
   AND (c.request_id IS NULL
        OR (c.state NOT IN ('creating', 'unknown') AND c.next_attempt <= ?
            AND (c.error <> '' OR e.status = 'processing' OR r.delivery_state = 'pending'
-                OR c.observed_version <> (`+statusRequestVersionSQL+`))))
+                OR c.observed_version <> (`+statusRequestVersionSQL+`)
+ OR EXISTS(SELECT 1 FROM session_controls sc WHERE sc.thread_id=c.thread_id AND sc.event_id=c.request_id AND sc.kind='model' AND sc.state='open'))))
 ORDER BY CASE
              WHEN c.request_id IS NULL
                   OR c.observed_version <> (`+statusRequestVersionSQL+`) THEN 0

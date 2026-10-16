@@ -10,7 +10,7 @@ import (
 )
 
 func (bridge *Bridge) syncRequestTelemetry(ctx context.Context) {
-	ticker := time.NewTicker(10 * time.Second)
+	ticker := time.NewTicker(5 * time.Second)
 	defer ticker.Stop()
 	ready := false
 	var lastWarning time.Time
@@ -57,7 +57,7 @@ func (bridge *Bridge) collectRequestTelemetry(parent context.Context, candidate 
 	if json.Unmarshal([]byte(candidate.DisplayJSON), &snapshot) != nil {
 		snapshot = telemetry.Snapshot{Issue: "state_invalid"}
 	}
-	delay := 10 * time.Second
+	delay := 5 * time.Second
 	if !finished {
 		var state telemetry.State
 		if len(stateJSON) > 16384 || json.Unmarshal([]byte(stateJSON), &state) != nil {
@@ -73,12 +73,43 @@ func (bridge *Bridge) collectRequestTelemetry(parent context.Context, candidate 
 			}
 		}
 	}
+	verifiedTerminal := ""
+	// 桌面仍在生成的公开文字可能尚未落盘。仅取已关联的精确轮次。
+	if !finished && snapshot.TurnID != "" && snapshot.EndedAt == 0 && snapshot.Issue != "identity_conflict" {
+		liveCtx, stop := context.WithTimeout(parent, 8*time.Second)
+		turn, liveErr := bridge.codex.ReadControlTurn(liveCtx, candidate.ThreadID, snapshot.TurnID)
+		stop()
+		if liveErr == nil {
+			text := []rune(bridge.presentationFilter().Text(turn.Preview))
+			if len(text) > 1000 {
+				text = text[len(text)-1000:]
+			}
+			preview := string(text)
+			if preview != "" && preview != snapshot.Preview {
+				snapshot.Preview, snapshot.PreviewAt = preview, time.Now().UnixMilli()
+			}
+			if turn.Status != "inProgress" {
+				snapshot.Outcome = turn.Status
+				verifiedTerminal = turn.Status
+			}
+		}
+	}
+	snapshot.Preview = bridge.presentationFilter().Text(snapshot.Preview)
+	// 将预览写回同一观察版本，下一次没有新日志时也保留它。
+	var displayState telemetry.State
+	if json.Unmarshal([]byte(stateJSON), &displayState) == nil {
+		displayState.Snapshot = snapshot
+		if raw, err := json.Marshal(displayState); err == nil {
+			stateJSON = string(raw)
+		}
+	}
 	writeCtx, cancel := context.WithTimeout(parent, 2*time.Second)
 	saved, err := bridge.store.SaveRequestTelemetry(writeCtx, candidate, stateJSON, snapshot, next, finished, delay)
 	cancel()
 	if err != nil || !saved {
 		return
 	}
+	bridge.codex.NotifyObservedTurnFailure(candidate.ThreadID, candidate.TurnRef, verifiedTerminal)
 	report, err := bridge.store.RequestTelemetry(candidate.EventID, candidate.ThreadID, candidate.AddressKey)
 	if err != nil || report.Revision <= candidate.PresentedRevision {
 		return
@@ -91,6 +122,9 @@ func (bridge *Bridge) collectRequestTelemetry(parent context.Context, candidate 
 }
 
 func (bridge *Bridge) observeStatusCard(view store.SessionStatus) error {
+	if err := bridge.store.ExpireModelControls(view.Session.ThreadID, view.Task.ID); err != nil {
+		return err
+	}
 	if err := bridge.store.StatusCardObserved(view.Session.ThreadID, view.Task.ID, view.RequestVersion()); err != nil {
 		return err
 	}

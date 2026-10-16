@@ -240,6 +240,7 @@ func (c *Client) ForkThread(ctx context.Context, cfg config.Config, id, lastTurn
 }
 
 type TurnHooks struct {
+	Model, Effort       string
 	RequestID           string
 	DraftRecoveryNeeded func()
 	Progress            func(string, string)
@@ -255,6 +256,9 @@ func (c *Client) Turn(ctx context.Context, threadID, text string, progress ...fu
 }
 
 func (c *Client) TurnWithHooks(ctx context.Context, threadID, text string, hooks TurnHooks) (string, error) {
+	if hooks.Model != "" {
+		return c.selectedModelTurn(ctx, threadID, text, hooks)
+	}
 	if c.runtimeConfig.Codex.SubmissionMode == "native_queue" || c.runtimeConfig.Codex.SubmissionMode == "desktop_queue" {
 		return c.desktopQueueTurn(ctx, threadID, text, hooks)
 	}

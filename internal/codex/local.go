@@ -197,7 +197,14 @@ func findBinary(explicit, home string) (string, error) {
 	// 默认优先桌面应用随附的真实 CLI，避免 PATH 旧版本无法读取桌面分页会话。
 	// 用户显式选择的高级路径仍由上面的分支优先处理。
 	if runtime.GOOS == "darwin" {
-		for _, p := range []string{"/Applications/Codex.app/Contents/Resources/codex", "/Applications/ChatGPT.app/Contents/Resources/codex", filepath.Join(home, "Applications/Codex.app/Contents/Resources/codex"), filepath.Join(home, "Applications/ChatGPT.app/Contents/Resources/codex")} {
+		for _, p := range []string{
+			"/Applications/Codex.app/Contents/Resources/codex",
+			"/Applications/ChatGPT.app/Contents/Resources/codex",
+			"/Applications/ChatGPT.app/Contents/Resources/codex-cli/bin/codex",
+			filepath.Join(home, "Applications/Codex.app/Contents/Resources/codex"),
+			filepath.Join(home, "Applications/ChatGPT.app/Contents/Resources/codex"),
+			filepath.Join(home, "Applications/ChatGPT.app/Contents/Resources/codex-cli/bin/codex"),
+		} {
 			if executable(p) {
 				return p, nil
 			}

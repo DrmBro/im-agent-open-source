@@ -20,6 +20,9 @@ import (
 )
 
 type Bridge struct {
+	controlJobs         *queue.Queue
+	controlLocks        sync.Map
+	controlScheduled    sync.Map
 	inboundScheduled    sync.Map
 	reportJobs          *queue.Queue
 	reportScheduled     sync.Map
@@ -65,6 +68,7 @@ func (b *Bridge) Start(parent context.Context) error {
 	}
 	b.statusCardJobs = queue.New(ctx, 2, 32)
 	b.reportJobs = queue.New(ctx, 1, 8)
+	b.controlJobs = queue.New(ctx, 2, 32)
 
 	b.codex.SetHandler(b.handleCodexRequest)
 	for _, adapter := range b.channels {
@@ -134,6 +138,7 @@ func (b *Bridge) Start(parent context.Context) error {
 	b.jobs.Wait()
 	b.statusCardJobs.Wait()
 	b.reportJobs.Wait()
+	b.controlJobs.Wait()
 	return result
 }
 func (b *Bridge) receiveMessage(ctx context.Context, msg im.Message) error {
@@ -364,7 +369,13 @@ func (b *Bridge) runTurn(ctx context.Context, adapter im.Adapter, s store.Sessio
 	progress, stopProgress := b.observeDesktopProgress(turnCtx, adapter, s, msg)
 	defer stopProgress()
 	draftRecoveryNeeded := false
+	modelPreference, preferenceErr := b.store.SessionModel(s)
+	if preferenceErr != nil {
+		failureKind = requestNotSent
+		return diagnostics.UserError("无法读取会话模型设置，本条未提交")
+	}
 	turnID, err := b.codex.TurnWithHooks(turnCtx, s.ThreadID, msg.Text, codex.TurnHooks{
+		Model: modelPreference.Model, Effort: modelPreference.Effort,
 		Progress:            progress,
 		RequestID:           msg.ID,
 		DraftRecoveryNeeded: func() { draftRecoveryNeeded = true },
@@ -603,6 +614,9 @@ func (b *Bridge) createSessionChat(ctx context.Context, adapter im.Adapter, msg 
 	return address, nil
 }
 func (b *Bridge) receiveInteraction(ctx context.Context, in im.Interaction) error {
+	if strings.HasPrefix(in.ActionID, "session:") || strings.HasPrefix(in.ActionID, "session-form:") {
+		return b.receiveSessionControl(ctx, in)
+	}
 	if strings.HasPrefix(in.ActionID, "report:") {
 		return b.receiveTaskReport(ctx, in)
 	}
