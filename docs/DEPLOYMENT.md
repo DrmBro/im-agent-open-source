@@ -125,6 +125,8 @@ $HOME/Library/Application Support/IM Agent
 5. 共享群模式下可填写机器人已加入的 `oc_` 群 ID；留空时按客户端提示自动创建专用话题群。
 6. 保存配置。凭证不会回显；空白密钥输入表示保留原值。
 
+字段级配置说明见 [CONFIGURATION.md](CONFIGURATION.md)。
+
 ### 5.3 运行限制与会话同步
 
 默认限制适合个人使用：

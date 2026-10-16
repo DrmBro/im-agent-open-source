@@ -65,6 +65,33 @@ bash scripts/install-macos.sh build/bin/im-agent.app /Applications
 
 `config.json.example` 仅用于旧 JSON 配置导入预览；运行时不从明文 `config.json` 或环境变量读取 IM 凭证。
 
+## 配置说明
+
+配置保存在本机 `desktop.sqlite`；飞书凭证另存为本机加密数据，主密钥保存在系统钥匙串。保存配置后需要停止桥接并重新启动，后台不会热替换运行中的配置。
+
+### 推荐最小配置
+
+| 页面 | 必填项 | 推荐值 |
+| --- | --- | --- |
+| Codex 配置 | 无需模型凭证 | `mode=follow_local`，`submission_mode=native_queue` |
+| IM 连接 | App ID、App Secret、用户白名单、管理员 | 白名单使用 `ou_` 开头的飞书 Open ID |
+| 会话模式 | 可选 | 新用户先用 `group`；确认共享群阅读范围后再用 `topic` |
+| 沙箱与审批 | 必选 | `sandbox=workspace-write`，`approval_policy=untrusted` |
+| 会话同步 | 可选 | `watch.enabled=false`，确认风险后再开启 |
+
+### 关键配置约束
+
+- `allowed_users`：1–500 个飞书 Open ID；不在白名单内的用户会被忽略。
+- `admin_users`：1–49 个，且必须全部同时位于 `allowed_users`。
+- `conversation_mode`：`group` 或 `topic`；只影响新建或尚未绑定的会话。
+- `shared_chat_id`：仅 `topic` 模式使用，必须是机器人已加入的 `oc_` 开头群 ID。
+- `sandbox`：只允许 `read-only` 或 `workspace-write`。
+- `approval_policy`：只允许 `untrusted` 或 `on-request`。
+- `watch`：默认关闭；目标连接必须开启 `auto_create_chat`，扫描间隔为 5–3600 秒。
+- `cdp_port`：`0` 表示自动探测；非零值是首选本机 CDP 端口。桌面入口不得暴露到局域网或公网。
+
+字段级默认值、取值范围、导入行为和常见错误见 [docs/CONFIGURATION.md](docs/CONFIGURATION.md)。
+
 ## 安全边界
 
 - 只允许显式白名单用户使用；管理员必须同时位于白名单内。

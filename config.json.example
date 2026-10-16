@@ -1,13 +1,18 @@
 {
   "work_dir": "",
-  "state_dir": "./data",
+  "state_dir": "",
   "codex": {
+    "submission_mode": "native_queue",
+    "auto_switch_thread": false,
+    "preserve_desktop_draft": false,
+    "auto_restore_desktop_draft": false,
+    "mode": "follow_local",
     "binary": "",
     "home": "",
     "model": "",
     "sandbox": "workspace-write",
     "approval_policy": "untrusted",
-    "mode": "follow_local"
+    "cdp_port": 0
   },
   "connections": [
     {
@@ -20,7 +25,9 @@
         "ou_your_open_id"
       ],
       "chat_name_prefix": "Codex",
-      "auto_create_chat": true
+      "auto_create_chat": true,
+      "conversation_mode": "group",
+      "shared_chat_id": ""
     }
   ],
   "limits": {
