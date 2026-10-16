@@ -1,4 +1,4 @@
-IM Agent — macOS 朋友试用版
+IM Agent — macOS 开发预览版
 
 重要：本安装包尚未使用 Developer ID 发布签名，未经过 Apple 公证。
 macOS 可能阻止下载后的程序打开。请勿关闭 Gatekeeper、移除系统安全保护，或执行来历不明的绕过命令。
@@ -7,7 +7,7 @@ macOS 可能阻止下载后的程序打开。请勿关闭 Gatekeeper、移除系
 一、支持范围
 - 本包为 Apple Silicon（M 系列芯片）Mac 版本，不适用于 Intel Mac、Windows、iPhone 或 Android。
 - 当前开发机器为 macOS 15.0.1；其它系统版本和全新机器尚未完成兼容验收。
-- 这是邀请试用包，不是承诺稳定性的正式公开版本。
+- 这是公开开发预览包，不承诺稳定性；正式签名、公证及完整兼容验收仍待完成。
 - IM Agent 本体不需要安装 Go 或 Node 开发环境；你自己的 Codex 安装方式可能有额外要求。
 
 二、安装
