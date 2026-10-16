@@ -32,7 +32,7 @@ type ControlTurn struct {
 
 func (c *cdpClient) controlRequest(ctx context.Context, method string, params map[string]any) (json.RawMessage, error) {
 	switch method {
-	case "thread/read", "thread/turns/list", "turn/start", "turn/interrupt":
+	case "thread/read", "thread/resume", "thread/turns/list", "turn/start", "turn/interrupt":
 	default:
 		return nil, errors.New("不支持的会话控制操作")
 	}
@@ -100,7 +100,7 @@ func (c *Client) ReadControlTurn(ctx context.Context, thread, expected string) (
 	turn := response.Data[0].ControlTurn
 	if !c.desktopMode() {
 		for _, item := range response.Data[0].Items {
-			if item.Type == "agentMessage" && (item.Phase == "commentary" || item.Phase == "final_answer") {
+			if item.Type == "agentMessage" && publicAssistantPhase(item.Phase) {
 				turn.Preview = publicPreview(item.Text)
 			}
 		}
@@ -132,39 +132,65 @@ func (c *Client) InterruptExactTurn(ctx context.Context, thread, turn string) (b
 	return current.Status != "inProgress", nil
 }
 func (c *Client) selectedModelTurn(ctx context.Context, thread, text string, hooks TurnHooks) (string, error) {
-	if !telemetryModelName.MatchString(hooks.Model) || hooks.Effort == "" {
+	if hooks.Model != "" && (!telemetryModelName.MatchString(hooks.Model) || hooks.Effort == "") {
 		return "", diagnostics.UserError("模型或思考程度无效，本条未提交")
 	}
-	if c.desktopMode() {
-		select {
-		case desktopSubmissionGate <- struct{}{}:
-			defer func() { <-desktopSubmissionGate }()
-		case <-ctx.Done():
-			return "", ctx.Err()
+	// 等待只读状态，不占全局输入焦点锁，也不清理任何会话的草稿。
+	readyCtx, stopReady := context.WithTimeout(ctx, 120*time.Second)
+	defer stopReady()
+	reported := false
+	for {
+		if readyCtx.Err() != nil {
+			return "", diagnostics.UserError("等待目标会话空闲已结束，本条尚未提交，原草稿保持不动")
 		}
-	}
-	raw, e := c.sessionControlCall(ctx, "thread/read", map[string]any{"threadId": thread, "includeTurns": false})
-	if e != nil {
-		return "", diagnostics.UserError("无法核对会话状态，本条尚未提交")
-	}
-	var before struct {
-		Thread struct {
-			ID     string `json:"id"`
-			Status struct {
-				Type string `json:"type"`
-			} `json:"status"`
-		} `json:"thread"`
-	}
-	if json.Unmarshal(raw, &before) != nil || before.Thread.ID != thread || before.Thread.Status.Type != "idle" {
-		return "", diagnostics.UserError("会话尚未确认空闲，本条未提交；所选模型已保留，不中断正在执行的轮次")
+		raw, err := c.sessionControlCall(readyCtx, "thread/read", map[string]any{"threadId": thread, "includeTurns": false})
+		if err != nil {
+			return "", diagnostics.UserError("无法通过桌面连接确认目标会话，本条未提交；没有操作输入框或草稿")
+		}
+		var before struct {
+			Thread struct {
+				ID     string `json:"id"`
+				Status struct {
+					Type string `json:"type"`
+				} `json:"status"`
+			} `json:"thread"`
+		}
+		if json.Unmarshal(raw, &before) != nil || before.Thread.ID != thread {
+			return "", diagnostics.UserError("桌面返回的目标会话身份不一致，本条未提交")
+		}
+		if before.Thread.Status.Type == "notLoaded" {
+			raw, err = c.sessionControlCall(readyCtx, "thread/resume", map[string]any{"threadId": thread})
+			if err != nil || json.Unmarshal(raw, &before) != nil || before.Thread.ID != thread {
+				return "", diagnostics.UserError("目标会话未能在桌面执行服务中加载，本条未提交；未切换窗口或清理草稿")
+			}
+		}
+		if before.Thread.Status.Type == "idle" {
+			break
+		}
+		if before.Thread.Status.Type != "active" {
+			return "", diagnostics.UserError("目标会话状态尚未确认，本条未提交；未切换窗口或清理草稿")
+		}
+		if !reported && hooks.Progress != nil {
+			hooks.Progress("waiting_desktop", "目标会话仍有轮次执行，本条尚未提交；等待其结束，不打断，也不改动草稿。")
+			reported = true
+		}
+		select {
+		case <-readyCtx.Done():
+			return "", diagnostics.UserError("等待目标会话空闲已结束，本条尚未提交，原草稿保持不动")
+		case <-time.After(time.Second):
+		}
 	}
 	path, offset := findDesktopRollout(c.runtimeConfig.Codex.Home, thread)
 	if hooks.BeforeSubmit != nil {
-		if e = hooks.BeforeSubmit(path, offset); e != nil {
-			return "", e
+		if err := hooks.BeforeSubmit(path, offset); err != nil {
+			return "", err
 		}
 	}
-	raw, e = c.sessionControlCall(ctx, "turn/start", map[string]any{"threadId": thread, "model": hooks.Model, "effort": hooks.Effort, "input": []map[string]any{{"type": "text", "text": text}}})
+	params := map[string]any{"threadId": thread, "input": []map[string]any{{"type": "text", "text": text}}}
+	if hooks.Model != "" {
+		params["model"], params["effort"] = hooks.Model, hooks.Effort
+	}
+	raw, e := c.sessionControlCall(ctx, "turn/start", params)
 	if e != nil {
 		var known diagnostics.UserError
 		if errors.As(e, &known) {

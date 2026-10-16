@@ -184,7 +184,7 @@ function renderLocalInfo(){
  for(const warning of localInfo.warnings||[])report.append(node('p','muted',warning));
 }
 async function refreshCodex(){if(!draft)return;localInfo=await api().InspectCodex(draft.codex,draft.work_dir);sourceRefreshAt=Date.now();renderLocalInfo();}
-function renderLimits(){const el=$('limit-fields');el.replaceChildren();const fields=[['turn_timeout_seconds','任务超时（秒）',30,7200],['approval_timeout_seconds','审批超时（秒）',15,1800],['workers','并发工作者',1,16],['queue_size','每会话等待容量',1,512],['max_message_chars','单条输出字符数',200,3000],['max_input_chars','最大输入字符数',1,64000],['idle_push_ms','进度合并间隔（毫秒）',1000,60000]];
+function renderLimits(){const el=$('limit-fields');el.replaceChildren();el.append(node('p','muted','授权、提问选择和表单不设等待期限。原请求结束、取消或已处理时，旧操作仍会失效。'));const fields=[['turn_timeout_seconds','会话创建超时（秒）',30,7200],['workers','并发工作者',1,16],['queue_size','每会话等待容量',1,512],['max_message_chars','单条输出字符数',200,3000],['max_input_chars','最大输入字符数',1,64000],['idle_push_ms','进度合并间隔（毫秒）',1000,60000]];
  fields.forEach(([k,label,min,max])=>{const i=bindValue(el,label,draft.limits[k],v=>draft.limits[k]=v,{type:'number',help:`允许范围 ${min} – ${max}`});i.min=min;i.max=max;i.step=1;});
 }
 function renderWatch(){const el=$('watch-fields');el.replaceChildren();toggle(el,'启用 Codex 会话自动发现',draft.watch.enabled,v=>{draft.watch.enabled=v;renderWatch();},'未设置默认项目时可发现多个目录的 Codex 会话，按目标连接模式创建独立群或共享群话题；请确认这些会话适合分享到目标群成员。');

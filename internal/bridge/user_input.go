@@ -7,7 +7,6 @@ import (
 	"fmt"
 	"strconv"
 	"strings"
-	"time"
 
 	"im-agent/internal/im"
 	"im-agent/internal/store"
@@ -100,8 +99,7 @@ func (b *Bridge) waitInputChoice(ctx context.Context, adapter im.Adapter, s stor
 			text += "\n\n" + o.Label + "：" + o.Description
 		}
 	}
-	ttl := time.Duration(b.cfg.Limits.ApprovalTimeoutSeconds) * time.Second
-	if err := b.store.PutAction(store.Action{ID: actionID, ThreadID: s.ThreadID, Address: s.Address, UserID: s.Owner, Kind: "input", Payload: store.JSON(payload), ExpiresAt: time.Now().Add(ttl).Unix()}); err != nil {
+	if err := b.store.PutAction(store.Action{ID: actionID, ThreadID: s.ThreadID, Address: s.Address, UserID: s.Owner, Kind: "input", Payload: store.JSON(payload), ExpiresAt: 0}); err != nil {
 		return "", err
 	}
 	ch := make(chan approvalResult, 1)
@@ -112,9 +110,9 @@ func (b *Bridge) waitInputChoice(ctx context.Context, adapter im.Adapter, s stor
 		b.mu.Lock()
 		delete(b.approvals, actionID)
 		b.mu.Unlock()
-		_ = b.store.Expire(actionID, "timeout")
+		_ = b.store.Expire(actionID, "cancelled")
 	}()
-	card := im.Card{Title: title, Text: text, ActionID: actionID}
+	card := im.Card{Title: title, Text: text + "\n\n可稍后选择，没有等待有效期。", ActionID: actionID}
 	if adapter.Capabilities().SelectMenus {
 		card.Selection = &im.Selection{Placeholder: "请选择一项（选择后提交）", Options: options}
 	} else {
@@ -127,8 +125,6 @@ func (b *Bridge) waitInputChoice(ctx context.Context, adapter im.Adapter, s stor
 	if err = b.store.ActionMessage(actionID, messageID); err != nil {
 		return "", errors.New("选择卡片回执保存失败，未接受任何选择")
 	}
-	timer := time.NewTimer(ttl)
-	defer timer.Stop()
 	select {
 	case result := <-ch:
 		key, ok := result.Value.(string)
@@ -146,9 +142,6 @@ func (b *Bridge) waitInputChoice(ctx context.Context, adapter im.Adapter, s stor
 		answer := q.Options[n].Label
 		_ = adapter.UpdateCard(ctx, s.Address, messageID, im.Card{Title: title, Text: q.Question + "\n\n已选择：" + answer})
 		return answer, nil
-	case <-timer.C:
-		_ = adapter.UpdateCard(ctx, s.Address, messageID, im.Card{Title: title, Text: q.Question + "\n\n已超时，未提交答案。"})
-		return "", errors.New("用户选择超时，未默认选择任何选项")
 	case <-ctx.Done():
 		return "", ctx.Err()
 	}

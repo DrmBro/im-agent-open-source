@@ -11,6 +11,7 @@ import (
 	"fmt"
 	"io"
 	"log/slog"
+	"net"
 	"net/http"
 	"net/url"
 	"strings"
@@ -161,7 +162,7 @@ func (c *Client) Start(ctx context.Context, onMessage func(context.Context, im.M
 		}
 		// 核心仅做本机校验和排队，不在回调内等待建群或模型。
 		if e := onAction(ctx, im.Interaction{Fields: fields, Address: a, MessageID: v.Context.OpenMessageID, UserID: uid, ActionID: id, Choice: choice}); e != nil {
-			if strings.HasPrefix(id, "new:") || strings.HasPrefix(id, "session:") || strings.HasPrefix(id, "session-form:") {
+			if strings.HasPrefix(id, "new:") || strings.HasPrefix(id, "session:") || strings.HasPrefix(id, "session-form:") || strings.HasPrefix(id, "desktop-approval:") {
 				return &callback.CardActionTriggerResponse{Toast: &callback.Toast{Type: "error", Content: redact.Clip(diagnostics.Error(e), 100)}}, nil
 			}
 			return reject(), nil
@@ -239,15 +240,32 @@ func (c *Client) do(ctx context.Context, method, path, token string, body any) (
 	}
 	resp, e := c.http.Do(req)
 	if e != nil {
-		return out, errors.New("飞书网络请求失败")
+		if ctx.Err() != nil {
+			return out, ctx.Err()
+		}
+		var network net.Error
+		if errors.As(e, &network) && network.Timeout() {
+			return out, diagnostics.UserError("飞书网络请求超时")
+		}
+		var dns *net.DNSError
+		if errors.As(e, &dns) {
+			return out, diagnostics.UserError("飞书域名解析失败")
+		}
+		return out, diagnostics.UserError("飞书网络连接失败")
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
 		return out, &apiError{httpStatus: resp.StatusCode}
 	}
 	data, e := io.ReadAll(io.LimitReader(resp.Body, (2<<20)+1))
-	if e != nil || len(data) > 2<<20 || json.Unmarshal(data, &out) != nil {
-		return out, errors.New("飞书响应格式或大小无效")
+	if e != nil {
+		if ctx.Err() != nil {
+			return out, ctx.Err()
+		}
+		return out, diagnostics.UserError("飞书响应读取中断")
+	}
+	if len(data) > 2<<20 || json.Unmarshal(data, &out) != nil {
+		return out, diagnostics.UserError("飞书响应格式或大小无效，需核对送达结果")
 	}
 	if out.Code != 0 {
 		return out, &apiError{code: out.Code}
@@ -265,7 +283,7 @@ func (c *Client) accessToken(ctx context.Context) (string, error) {
 		return "", e
 	}
 	if v.Token == "" || v.Expire <= 0 {
-		return "", errors.New("飞书访问令牌无效")
+		return "", diagnostics.UserError("飞书认证响应不完整，未取得可用访问令牌")
 	}
 	c.token = v.Token
 	c.tokenUntil = time.Now().Add(time.Duration(v.Expire)*time.Second - 60*time.Second)
@@ -346,7 +364,7 @@ func (c *Client) send(ctx context.Context, a im.Address, kind, content, id strin
 		ID string `json:"message_id"`
 	}
 	if json.Unmarshal(result.Data, &v) != nil || v.ID == "" {
-		return "", &im.DeliveryUncertain{Cause: errors.New("飞书未返回消息 ID")}
+		return "", &im.DeliveryUncertain{Cause: diagnostics.UserError("飞书响应缺少消息回执，需核对是否已送达")}
 	}
 
 	return v.ID, nil

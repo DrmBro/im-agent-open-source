@@ -317,7 +317,13 @@ func (c *Client) allowNativeRequest(f Frame) bool {
 
 // desktopQueueTurn 将消息交给当前 CODEX_HOME 中已经存在的会话，由桌面 Codex 客户端负责执行。
 // 提交路径不得重复发送；回传必须关联新用户输入所属的真实轮次。
+// desktopQueueTurn 按明确会话提交，不依赖当前窗口、输入焦点或草稿内容。
 func (c *Client) desktopQueueTurn(ctx context.Context, threadID, text string, hooks TurnHooks) (string, error) {
+	return c.selectedModelTurn(ctx, threadID, text, hooks)
+}
+
+// 保留旧输入框实现供兼容性审查；正式提交不在接口结果未知时回退到此路径。
+func (c *Client) desktopComposerTurn(ctx context.Context, threadID, text string, hooks TurnHooks) (string, error) {
 	metadata, err := c.ReadMetadata(ctx, threadID)
 	if err != nil {
 		return "", err
@@ -493,6 +499,8 @@ func findDesktopRollout(home, threadID string) (string, int64) {
 // 只接受提交后真实用户条目所属轮次的完成事件，不能拿提交前正在执行的轮次作为回执。
 func readDesktopRolloutUntil(ctx context.Context, path string, offset int64, turnID, expected string, c *Client, threadID string, actualTurn ...string) bool {
 	currentTurn, matchedTurn, final, finalID := "", "", "", ""
+	unphasedCandidate := false
+	unphasedFingerprints := []string{}
 	observedTurn := false
 	ticker := time.NewTicker(500 * time.Millisecond)
 	defer ticker.Stop()
@@ -560,6 +568,19 @@ func readDesktopRolloutUntil(ctx context.Context, path string, offset int64, tur
 						return true
 					}
 					if ev.Type == "task_complete" {
+						matches := 0
+						if unphasedCandidate {
+							for _, fingerprint := range unphasedFingerprints {
+								if fingerprint == storeHash(ev.Last) {
+									matches++
+								}
+							}
+						}
+						if unphasedCandidate && (matches != 1 || ev.Last == "" || ev.Last != final) {
+							f.Close()
+							c.sendDesktopObservationStopped(threadID, turnID)
+							return true
+						}
 						if hasCompletionError(ev.Error) {
 							f.Close()
 							c.sendDesktopTurnFailure(threadID, turnID, "桌面本轮响应中断或返回错误，可能已有部分操作完成")
@@ -607,6 +628,7 @@ func readDesktopRolloutUntil(ctx context.Context, path string, offset int64, tur
 					Type    string         `json:"type"`
 					Role    string         `json:"role"`
 					Phase   string         `json:"phase"`
+					Status  string         `json:"status"`
 					Content []InputContent `json:"content"`
 					Meta    struct {
 						TurnID string `json:"turn_id"`
@@ -631,7 +653,16 @@ func readDesktopRolloutUntil(ctx context.Context, path string, offset int64, tur
 						matchedTurn = actual
 					}
 				}
-				if matchedTurn != "" && currentTurn == matchedTurn && item.Role == "assistant" && item.Phase == "final_answer" {
+				if matchedTurn != "" && currentTurn == matchedTurn && item.Role == "assistant" && completedPublicReply(item.Phase, item.Status) && (item.Phase != "" || item.Meta.TurnID == matchedTurn) {
+					unphasedCandidate = item.Phase == ""
+					if unphasedCandidate {
+						if len(unphasedFingerprints) >= 512 {
+							f.Close()
+							c.sendDesktopObservationStopped(threadID, turnID)
+							return true
+						}
+						unphasedFingerprints = append(unphasedFingerprints, storeHash(text))
+					}
 					finalID = item.ID
 					final = text
 				}

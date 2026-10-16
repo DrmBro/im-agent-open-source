@@ -157,6 +157,18 @@ func New(dir string) (*Store, error) {
 		db.Close()
 		return nil, e
 	}
+	if e = s.migrateStatusCardRelocation(); e != nil {
+		db.Close()
+		return nil, e
+	}
+	if e = s.migrateDesktopApprovals(); e != nil {
+		db.Close()
+		return nil, e
+	}
+	if e = s.migrateInteractionWaiting(); e != nil {
+		db.Close()
+		return nil, e
+	}
 	if e = s.migrateHistoryRetention(); e != nil {
 		db.Close()
 		return nil, e
@@ -315,7 +327,7 @@ func (s *Store) ActionMessage(id, message string) error {
 	return e
 }
 func (s *Store) Resolve(id, status string) (bool, error) {
-	r, e := s.db.Exec("UPDATE pending_actions SET status = ?, resolved_at = ? WHERE id = ? AND status = 'pending' AND expires_at > ?", status, time.Now().Unix(), id, time.Now().Unix())
+	r, e := s.db.Exec("UPDATE pending_actions SET status = ?, resolved_at = ? WHERE id = ? AND status = 'pending' AND (expires_at=0 OR expires_at > ?)", status, time.Now().Unix(), id, time.Now().Unix())
 	if e != nil {
 		return false, e
 	}

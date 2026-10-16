@@ -256,12 +256,29 @@ func (c *Client) ReadLiveMessages(ctx context.Context, thread, path string, offs
 			out = append(out, liveIssue("invalid_json", raw, start))
 			continue
 		}
+		if rec.Type == "event_msg" {
+			var event struct {
+				Type   string          `json:"type"`
+				TurnID string          `json:"turn_id"`
+				Last   string          `json:"last_agent_message"`
+				Error  json.RawMessage `json:"error"`
+			}
+			if json.Unmarshal(rec.Payload, &event) == nil && event.Type == "task_complete" && !hasCompletionError(event.Error) {
+				replies, checkErr := finalRepliesAtCompletion(ctx, f, header, start, event.TurnID, event.Last)
+				if checkErr != nil {
+					out = append(out, liveIssue("final_reply_unconfirmed", raw, start))
+				} else {
+					out = append(out, replies...)
+				}
+			}
+			continue
+		}
 		if rec.Type != "response_item" {
 			continue
 		}
 		var item struct {
-			Type, Role, ID, Phase string
-			Content               []InputContent
+			Type, Role, ID, Phase, Status string
+			Content                       []InputContent
 		}
 		if json.Unmarshal(rec.Payload, &item) != nil {
 			out = append(out, liveIssue("invalid_item", raw, start))
@@ -270,7 +287,8 @@ func (c *Client) ReadLiveMessages(ctx context.Context, thread, path string, offs
 		if item.Type != "message" || (item.Role != "user" && item.Role != "assistant") {
 			continue
 		}
-		if item.Role == "assistant" && item.Phase != "final_answer" {
+		// 助手正文只在对应完成事件核验后发出；过程由遥测进入小卡片。
+		if item.Role == "assistant" {
 			continue
 		}
 		parts := []string{}

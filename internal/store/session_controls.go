@@ -88,7 +88,7 @@ func (s *Store) SessionControl(id string) (SessionControl, error) {
 	return c, e
 }
 func (s *Store) OpenModelControl(thread, event string) (SessionControl, error) {
-	rows, e := s.db.Query(`SELECT id FROM session_controls WHERE thread_id=? AND event_id=? AND kind='model' AND state='open' AND expires_at>?`, thread, event, time.Now().Unix())
+	rows, e := s.db.Query(`SELECT id FROM session_controls WHERE thread_id=? AND event_id=? AND kind='model' AND state='open' AND (expires_at=0 OR expires_at>?)`, thread, event, time.Now().Unix())
 	if e != nil {
 		return SessionControl{}, e
 	}
@@ -118,7 +118,7 @@ func (s *Store) FinishSessionControl(id, state, detail string) error {
 	return e
 }
 func (s *Store) ClaimSessionControl(id string) (bool, error) {
-	r, e := s.db.Exec(`UPDATE session_controls SET state='running' WHERE id=? AND state='open' AND expires_at>?`, id, time.Now().Unix())
+	r, e := s.db.Exec(`UPDATE session_controls SET state='running' WHERE id=? AND state='open' AND (expires_at=0 OR expires_at>?)`, id, time.Now().Unix())
 	if e != nil {
 		return false, e
 	}
@@ -132,7 +132,7 @@ func (s *Store) SaveSessionModel(session Session, c SessionControl, v SessionMod
 	}
 	defer tx.Rollback()
 	var state string
-	if e = tx.QueryRow(`SELECT state FROM session_controls WHERE id=? AND thread_id=? AND address_key=? AND expires_at>?`, c.ID, session.ThreadID, Hash(session.Address.Key()), time.Now().Unix()).Scan(&state); e != nil {
+	if e = tx.QueryRow(`SELECT state FROM session_controls WHERE id=? AND thread_id=? AND address_key=? AND (expires_at=0 OR expires_at>?)`, c.ID, session.ThreadID, Hash(session.Address.Key()), time.Now().Unix()).Scan(&state); e != nil {
 		return e
 	}
 	if state != "open" {
@@ -160,7 +160,7 @@ func (s *Store) SaveSessionModel(session Session, c SessionControl, v SessionMod
 }
 
 func (s *Store) ExpireModelControls(thread, event string) error {
-	_, e := s.db.Exec(`UPDATE session_controls SET state='expired' WHERE thread_id=? AND event_id=? AND kind='model' AND state='open' AND expires_at<=?`, thread, event, time.Now().Unix())
+	_, e := s.db.Exec(`UPDATE session_controls SET state='expired' WHERE thread_id=? AND event_id=? AND kind='model' AND state='open' AND expires_at>0 AND expires_at<=?`, thread, event, time.Now().Unix())
 	return e
 }
 

@@ -32,7 +32,7 @@
   ],
   "limits": {
     "turn_timeout_seconds": 900,
-    "approval_timeout_seconds": 300,
+    "approval_timeout_seconds": 0,
     "max_message_chars": 2000,
     "max_input_chars": 24000,
     "queue_size": 32,

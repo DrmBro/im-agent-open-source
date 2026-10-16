@@ -203,8 +203,8 @@ func applyRequestTelemetry(state *telemetry.State, thread, kind string, raw json
 		if state.MatchedTurn == "" || state.Snapshot.EndedAt > 0 {
 			return false, nil
 		}
-		if item.Type == "message" && item.Role == "assistant" && (item.Phase == "commentary" || item.Phase == "final_answer") {
-			if item.Phase == "final_answer" && state.CurrentTurn == state.MatchedTurn {
+		if item.Type == "message" && item.Role == "assistant" && publicAssistantPhase(item.Phase) {
+			if (item.Phase == "final_answer" || item.Phase == "") && state.CurrentTurn == state.MatchedTurn {
 				state.FinalCount++
 				if text, supported := exactReplyText(item.Content); supported && item.ID != "" {
 					state.FinalID, state.FinalFingerprint, state.FinalAt = item.ID, storeHash(text), at

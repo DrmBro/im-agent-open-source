@@ -55,7 +55,7 @@ func (s *Store) CreationMessage(id, message string) error {
 	return e
 }
 func (s *Store) ClaimCreation(id, selection string) (bool, error) {
-	r, e := s.db.Exec("UPDATE creation_forms SET state='claimed',stage='queued',selection=?,updated_at=? WHERE id=? AND state='pending' AND message_id<>'' AND expires_at>?", selection, time.Now().Unix(), id, time.Now().Unix())
+	r, e := s.db.Exec("UPDATE creation_forms SET state='claimed',stage='queued',selection=?,updated_at=? WHERE id=? AND state='pending' AND message_id<>'' AND (expires_at=0 OR expires_at>?)", selection, time.Now().Unix(), id, time.Now().Unix())
 	if e != nil {
 		return false, e
 	}

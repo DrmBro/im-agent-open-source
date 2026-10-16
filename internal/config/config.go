@@ -45,7 +45,7 @@ type Connection struct {
 }
 type Limits struct {
 	TurnTimeoutSeconds     int `json:"turn_timeout_seconds"`
-	ApprovalTimeoutSeconds int `json:"approval_timeout_seconds"`
+	ApprovalTimeoutSeconds int `json:"approval_timeout_seconds"` // 旧配置兼容字段；用户交互不再按此值超时。
 	MaxMessageChars        int `json:"max_message_chars"`
 	MaxInputChars          int `json:"max_input_chars"`
 	QueueSize              int `json:"queue_size"`
@@ -60,7 +60,7 @@ type Watch struct {
 }
 
 func Defaults() Config {
-	return Config{Codex: Codex{Mode: "follow_local", SubmissionMode: "native_queue", Sandbox: "workspace-write", ApprovalPolicy: "untrusted"}, Limits: Limits{900, 300, 2000, 24000, 32, 4, 3000}, Watch: Watch{IntervalSeconds: 10}, Connections: []Connection{}}
+	return Config{Codex: Codex{Mode: "follow_local", SubmissionMode: "native_queue", Sandbox: "workspace-write", ApprovalPolicy: "untrusted"}, Limits: Limits{900, 0, 2000, 24000, 32, 4, 3000}, Watch: Watch{IntervalSeconds: 10}, Connections: []Connection{}}
 }
 
 // Decode 可导入旧版环境变量字段，但仅丢弃字段，不读取或导入环境值。
@@ -190,7 +190,7 @@ func validate(c Config, base string, requireConnections bool) (Config, error) {
 		return c, errors.New("approval_policy 仅支持 untrusted/on-request")
 	}
 	l := c.Limits
-	if l.Workers < 1 || l.Workers > 16 || l.QueueSize < 1 || l.QueueSize > 512 || l.TurnTimeoutSeconds < 30 || l.TurnTimeoutSeconds > 7200 || l.ApprovalTimeoutSeconds < 15 || l.ApprovalTimeoutSeconds > 1800 || l.MaxMessageChars < 200 || l.MaxMessageChars > 3000 || l.MaxInputChars < 1 || l.MaxInputChars > 64000 || l.IdlePushMS < 1000 || l.IdlePushMS > 60000 {
+	if l.Workers < 1 || l.Workers > 16 || l.QueueSize < 1 || l.QueueSize > 512 || l.TurnTimeoutSeconds < 30 || l.TurnTimeoutSeconds > 7200 || (l.ApprovalTimeoutSeconds != 0 && (l.ApprovalTimeoutSeconds < 15 || l.ApprovalTimeoutSeconds > 1800)) || l.MaxMessageChars < 200 || l.MaxMessageChars > 3000 || l.MaxInputChars < 1 || l.MaxInputChars > 64000 || l.IdlePushMS < 1000 || l.IdlePushMS > 60000 {
 		return c, errors.New("limits 超出允许范围")
 	}
 	if requireConnections && len(c.Connections) == 0 {

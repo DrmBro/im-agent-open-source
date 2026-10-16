@@ -31,6 +31,7 @@ type RequestAudit struct {
 	At             int64  `json:"at"`
 }
 type RequestProbe struct {
+	OriginOffset                                                    int64
 	EventID, ThreadID, AddressKey, TurnRef, Path, UserItemID, State string
 	Offset                                                          int64
 }
@@ -390,7 +391,7 @@ FROM request_result_replies m WHERE m.event_id = ? AND m.thread_id = ?`, c.id, s
 }
 
 func (s *Store) PendingRequestProbes() ([]RequestProbe, error) {
-	rows, e := s.db.Query(`SELECT r.event_id,r.thread_id,r.address_key,r.turn_ref,r.observer_path,r.observer_offset,r.observer_state,o.user_item_id
+	rows, e := s.db.Query(`SELECT r.event_id,r.thread_id,r.address_key,r.turn_ref,r.observer_path,r.observer_offset,r.observer_state,o.user_item_id,o.min_offset
 FROM request_results r
          JOIN events e ON e.id = r.event_id
          JOIN sessions s ON s.thread_id = r.thread_id
@@ -409,7 +410,7 @@ ORDER BY r.next_probe,r.created_at,r.event_id LIMIT 16`, time.Now().Unix())
 	var out []RequestProbe
 	for rows.Next() {
 		var p RequestProbe
-		if e = rows.Scan(&p.EventID, &p.ThreadID, &p.AddressKey, &p.TurnRef, &p.Path, &p.Offset, &p.State, &p.UserItemID); e != nil {
+		if e = rows.Scan(&p.EventID, &p.ThreadID, &p.AddressKey, &p.TurnRef, &p.Path, &p.Offset, &p.State, &p.UserItemID, &p.OriginOffset); e != nil {
 			return nil, e
 		}
 		out = append(out, p)

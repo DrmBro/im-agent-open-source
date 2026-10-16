@@ -100,5 +100,5 @@ func (b *Bridge) recordRequestFailure(id, chatKey string, err error) (failureNot
 }
 
 func statusCardFailureText(err error) string {
-	return "【仅状态卡更新异常】\n状态卡可能暂时缺失或停留在旧状态，这不代表问题发送或执行失败。\n原因：" + diagnostics.Error(err) + "\n此异常不会重新执行或取消任务。请以实际回复为准，可发送 /status 再查看；不要因此重发原问题。"
+	return "【仅状态卡更新异常】\n状态卡可能暂时缺失或停留在旧状态，这不代表问题发送或执行失败。\n原因：" + diagnostics.Error(err) + "\n此异常不会重新执行或取消任务。若群里已有这张卡片，请点击卡片内的“刷新状态”核对回执；不要重发原问题。"
 }

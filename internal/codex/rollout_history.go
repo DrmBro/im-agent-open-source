@@ -14,13 +14,19 @@ import (
 // 桌面持有的活跃会话可能尚未更新独立 App Server 的分页索引。
 // 这里只读同一个 session_meta.id 的追加日志，不修改 Codex 文件、不恢复或执行会话。
 // 每个 Client 缓存已消费字节，只扫描新增完整行，保留最后一个用户输入和最终回复。
+type summaryReplyCandidate struct{ id, fingerprint string }
+
 type rolloutHistory struct {
-	mu              sync.Mutex
-	path            string
-	offset          int64
-	info            os.FileInfo
-	verified        bool
-	user, assistant HistoryMessage
+	summaryCandidates     []summaryReplyCandidate
+	summaryAmbiguous      bool
+	header                int64
+	currentTurn, userTurn string
+	mu                    sync.Mutex
+	path                  string
+	offset                int64
+	info                  os.FileInfo
+	verified              bool
+	user, assistant       HistoryMessage
 }
 
 func (c *Client) recentRollout(ctx context.Context, id string) ([]HistoryMessage, bool, error) {
@@ -47,6 +53,11 @@ func (c *Client) recentRollout(ctx context.Context, id string) ([]HistoryMessage
 		cache.offset = 0
 		cache.verified = false
 		cache.user, cache.assistant = HistoryMessage{}, HistoryMessage{}
+		cache.header = 0
+		cache.currentTurn = ""
+		cache.userTurn = ""
+		cache.summaryCandidates = nil
+		cache.summaryAmbiguous = false
 	}
 	cache.info = info
 	if _, err = file.Seek(cache.offset, io.SeekStart); err != nil {
@@ -79,6 +90,36 @@ func (c *Client) recentRollout(ctx context.Context, id string) ([]HistoryMessage
 				return nil, true, errors.New("桌面日志会话标识不匹配，拒绝同步")
 			}
 			cache.verified = true
+			cache.header = cache.offset + int64(len(raw))
+		}
+		if record.Type == "event_msg" {
+			var event struct {
+				Type   string          `json:"type"`
+				TurnID string          `json:"turn_id"`
+				Last   string          `json:"last_agent_message"`
+				Error  json.RawMessage `json:"error"`
+			}
+			if json.Unmarshal(record.Payload, &event) == nil {
+				if event.Type == "task_started" {
+					cache.currentTurn = event.TurnID
+				}
+				if event.Type == "task_complete" && !hasCompletionError(event.Error) && event.TurnID == cache.userTurn {
+					if event.Last != "" && !cache.summaryAmbiguous {
+						matches := 0
+						id := ""
+						for _, candidate := range cache.summaryCandidates {
+							if candidate.fingerprint == storeHash(event.Last) {
+								matches++
+								id = candidate.id
+							}
+						}
+						if matches == 1 {
+							cache.assistant = HistoryMessage{ID: id, Role: "assistant", Text: event.Last}
+						}
+					}
+					cache.summaryCandidates = nil
+				}
+			}
 		}
 		if record.Type == "response_item" {
 			var item struct {
@@ -86,7 +127,11 @@ func (c *Client) recentRollout(ctx context.Context, id string) ([]HistoryMessage
 				Role    string         `json:"role"`
 				ID      string         `json:"id"`
 				Phase   string         `json:"phase"`
+				Status  string         `json:"status"`
 				Content []InputContent `json:"content"`
+				Meta    struct {
+					TurnID string `json:"turn_id"`
+				} `json:"internal_chat_message_metadata_passthrough"`
 			}
 			if json.Unmarshal(record.Payload, &item) == nil && item.Type == "message" {
 				var parts []string
@@ -103,9 +148,26 @@ func (c *Client) recentRollout(ctx context.Context, id string) ([]HistoryMessage
 					}
 					if item.Role == "user" && visibleUserText(text) {
 						cache.user = message
+						cache.summaryCandidates = nil
+						cache.summaryAmbiguous = false
+						cache.assistant = HistoryMessage{}
+						cache.userTurn = item.Meta.TurnID
+						if cache.userTurn == "" {
+							cache.userTurn = cache.currentTurn
+						}
 					}
-					if item.Role == "assistant" && item.Phase == "final_answer" {
-						cache.assistant = message
+					actual := item.Meta.TurnID
+					if actual == "" && item.Phase == "final_answer" {
+						actual = cache.currentTurn
+					}
+					if item.Role == "assistant" && item.ID != "" && actual != "" && actual == cache.userTurn && completedPublicReply(item.Phase, item.Status) {
+						if body, supported := exactReplyText(item.Content); supported {
+							if len(cache.summaryCandidates) >= 512 {
+								cache.summaryAmbiguous = true
+							} else {
+								cache.summaryCandidates = append(cache.summaryCandidates, summaryReplyCandidate{id: item.ID, fingerprint: storeHash(body)})
+							}
+						}
 					}
 				}
 			}

@@ -20,6 +20,7 @@ import (
 )
 
 type Bridge struct {
+	approvalCardLocks   sync.Map
 	controlJobs         *queue.Queue
 	controlLocks        sync.Map
 	controlScheduled    sync.Map
@@ -66,6 +67,9 @@ func (b *Bridge) Start(parent context.Context) error {
 	if err := b.store.RecoverInboundStates(); err != nil {
 		return err
 	}
+	if err := b.store.InvalidateFinishedPreviewCards(); err != nil {
+		return err
+	}
 	b.statusCardJobs = queue.New(ctx, 2, 32)
 	b.reportJobs = queue.New(ctx, 1, 8)
 	b.controlJobs = queue.New(ctx, 2, 32)
@@ -92,6 +96,8 @@ func (b *Bridge) Start(parent context.Context) error {
 	go func() { defer wg.Done(); b.syncSessionStatusCards(ctx) }()
 	wg.Add(1)
 	go func() { defer wg.Done(); b.syncRequestRecovery(ctx) }()
+	wg.Add(1)
+	go func() { defer wg.Done(); b.syncDesktopApprovals(ctx) }()
 	wg.Add(1)
 	go func() { defer wg.Done(); b.syncHistoryRetention(ctx) }()
 	wg.Add(1)
@@ -614,6 +620,9 @@ func (b *Bridge) createSessionChat(ctx context.Context, adapter im.Adapter, msg 
 	return address, nil
 }
 func (b *Bridge) receiveInteraction(ctx context.Context, in im.Interaction) error {
+	if strings.HasPrefix(in.ActionID, "desktop-approval:") {
+		return b.receiveDesktopApproval(ctx, in)
+	}
 	if strings.HasPrefix(in.ActionID, "session:") || strings.HasPrefix(in.ActionID, "session-form:") {
 		return b.receiveSessionControl(ctx, in)
 	}
@@ -634,7 +643,7 @@ func (b *Bridge) receiveInteraction(ctx context.Context, in im.Interaction) erro
 		return errors.New("无权操作或审批已失效")
 	}
 	action, err := b.store.Action(in.ActionID)
-	if err != nil || action.Status != "pending" || action.ExpiresAt <= time.Now().Unix() || action.UserID != in.UserID || action.Address.BaseKey() != in.Address.BaseKey() || (in.Address.TopicID != "" && action.Address.TopicID != in.Address.TopicID) || action.MessageID == "" || action.MessageID != in.MessageID {
+	if err != nil || action.Status != "pending" || (action.ExpiresAt != 0 && action.ExpiresAt <= time.Now().Unix()) || action.UserID != in.UserID || action.Address.BaseKey() != in.Address.BaseKey() || (in.Address.TopicID != "" && action.Address.TopicID != in.Address.TopicID) || action.MessageID == "" || action.MessageID != in.MessageID {
 		return errors.New("无权操作或审批已失效")
 	}
 	if err := validateActionChoice(action, in.Choice); err != nil {
@@ -703,7 +712,7 @@ func (b *Bridge) handleCodexRequest(ctx context.Context, method string, raw json
 	case "item/fileChange/requestApproval":
 		kind, title, text = "file", "确认修改文件", "Codex 请求修改工作区文件。"
 	case "item/permissions/requestApproval":
-		kind, title, text = "permissions", "确认扩大权限", "Codex 请求扩大当前任务权限。默认拒绝，只有会话创建者可以确认。\n\n"+p.Reason
+		kind, title, text = "permissions", "确认扩大权限", "Codex 请求扩大当前任务权限。等待你的决定，不自动批准或超时拒绝；只有会话创建者可以确认。\n\n"+p.Reason
 	case "item/tool/requestUserInput":
 		return b.requestUserInput(ctx, adapter, s, raw)
 	default:
@@ -711,7 +720,7 @@ func (b *Bridge) handleCodexRequest(ctx context.Context, method string, raw json
 	}
 	actionID := store.ID()
 	payload := string(raw)
-	if err := b.store.PutAction(store.Action{ID: actionID, ThreadID: p.ThreadID, Address: s.Address, UserID: s.Owner, Kind: kind, Payload: payload, ExpiresAt: time.Now().Add(time.Duration(b.cfg.Limits.ApprovalTimeoutSeconds) * time.Second).Unix()}); err != nil {
+	if err := b.store.PutAction(store.Action{ID: actionID, ThreadID: p.ThreadID, Address: s.Address, UserID: s.Owner, Kind: kind, Payload: payload, ExpiresAt: 0}); err != nil {
 		return nil, err
 	}
 	ch := make(chan approvalResult, 1)
@@ -722,17 +731,15 @@ func (b *Bridge) handleCodexRequest(ctx context.Context, method string, raw json
 		b.mu.Lock()
 		delete(b.approvals, actionID)
 		b.mu.Unlock()
-		_ = b.store.Expire(actionID, "timeout")
+		_ = b.store.Expire(actionID, "cancelled")
 	}()
-	messageID, err := adapter.SendCard(ctx, s.Address, im.Card{Title: title, Text: text, ActionID: actionID, Buttons: buttons}, "")
+	messageID, err := adapter.SendCard(ctx, s.Address, im.Card{Title: title, Text: text + "\n\n可稍后处理；不会因为等待时间自动拒绝。", ActionID: actionID, Buttons: buttons}, "")
 	if err != nil {
 		return nil, err
 	}
 	if err = b.store.ActionMessage(actionID, messageID); err != nil {
 		return nil, errors.New("审批卡已发送，但保存回执失败，未允许操作")
 	}
-	timer := time.NewTimer(time.Duration(b.cfg.Limits.ApprovalTimeoutSeconds) * time.Second)
-	defer timer.Stop()
 	select {
 	case result := <-ch:
 		choice, _ := result.Value.(string)
@@ -762,9 +769,6 @@ func (b *Bridge) handleCodexRequest(ctx context.Context, method string, raw json
 			return map[string]any{"permissions": requested, "scope": "turn"}, nil
 		}
 		return map[string]string{"decision": choice}, nil
-	case <-timer.C:
-		_ = adapter.UpdateCard(ctx, s.Address, messageID, im.Card{Title: title, Text: "已超时，默认拒绝。", ActionID: actionID})
-		return map[string]string{"decision": "decline"}, nil
 	case <-ctx.Done():
 		return nil, ctx.Err()
 	}

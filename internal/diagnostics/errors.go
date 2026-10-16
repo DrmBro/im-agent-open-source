@@ -33,9 +33,12 @@ func Error(err error) string {
 	if strings.Contains(message, "model_not_found") || strings.Contains(message, "模型") && strings.Contains(message, "不存在") {
 		return "中转返回 model_not_found：请确认当前模型与真实客户端的授权，重试或改客户端标识不能代替授权"
 	}
-	values := codes.FindAllString(err.Error(), 3)
-	if len(values) > 0 {
-		return strings.Join(values, "；")
+	// 投递未确认等包装错误不能吞掉内层的安全状态码。
+	for cause, depth := err, 0; cause != nil && depth < 8; cause, depth = errors.Unwrap(cause), depth+1 {
+		values := codes.FindAllString(cause.Error(), 3)
+		if len(values) > 0 {
+			return strings.Join(values, "；")
+		}
 	}
 	return "请求失败（原始错误已隐藏）"
 }

@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"errors"
+	"strconv"
 	"sync"
 	"time"
 
@@ -190,13 +191,17 @@ func (b *Bridge) refreshRequestStatus(ctx context.Context, thread string, force 
 	if e != nil || !claimed {
 		return e
 	}
-	message, sendErr := a.SendCard(ctx, session.Address, card, "session-status:"+store.Hash(thread+"\x00"+session.Address.Key()+"\x00"+view.Task.ID))
+	sendIdentity := thread + "\x00" + session.Address.Key() + "\x00" + view.Task.ID
+	if existing.Generation > 0 {
+		sendIdentity += "\x00generation:" + strconv.FormatInt(existing.Generation, 10)
+	}
+	message, sendErr := a.SendCard(ctx, session.Address, card, "session-status:"+store.Hash(sendIdentity))
 	if sendErr != nil || message == "" {
 		var unknown *im.DeliveryUncertain
 		uncertain := message == "" && sendErr == nil || errors.As(sendErr, &unknown) || errors.Is(sendErr, context.Canceled) || errors.Is(sendErr, context.DeadlineExceeded)
 		hint := diagnostics.Error(sendErr)
 		if uncertain {
-			hint = "状态卡送达结果不确定，未重复发卡；不会重新执行任务"
+			hint = "状态卡送达结果不确定，未重复发卡；不会重新执行任务。原因：" + diagnostics.Error(sendErr)
 		}
 		_ = b.store.StatusCardFailed(thread, hint, uncertain, view.Task.ID)
 		if sendErr == nil {
@@ -243,7 +248,7 @@ func (b *Bridge) enqueueSessionStatus(thread string, force bool, request ...stri
 		pending, _ := b.statusCardDirty.LoadAndDelete(key)
 		refreshForce, _ := pending.(bool)
 		refreshForce = refreshForce || force
-		ctx, stop := context.WithTimeout(parent, 8*time.Second)
+		ctx, stop := context.WithTimeout(parent, 30*time.Second)
 		defer stop()
 		if err := b.refreshRequestStatus(ctx, thread, refreshForce, requestID); err != nil {
 			b.log.Warn("只读状态卡更新失败", "thread", thread, "error", diagnostics.Error(err))
@@ -274,6 +279,9 @@ func (b *Bridge) syncSessionStatusCards(ctx context.Context) {
 					return
 				}
 
+				if pending, err := b.store.EmptyStatusCardNeedsRefresh(s); err == nil && pending {
+					_ = b.enqueueSessionStatus(s.ThreadID, false, "")
+				}
 				requests, readErr := b.store.PendingSessionStatusRequests(s)
 				if readErr != nil {
 					b.log.Warn("读取请求状态卡失败", "thread", s.ThreadID, "error", diagnostics.Error(readErr))
@@ -312,7 +320,7 @@ func (b *Bridge) sessionStatusCommand(ctx context.Context, a im.Adapter, msg im.
 		_, e = a.SendText(ctx, msg.Address, readonlySessionCard(view, time.Now()).Text, msg.ID)
 		return e
 	}
-	if e = b.enqueueSessionStatus(s.ThreadID, true); e != nil {
+	if e = b.showStatusAtBottom(s, msg.ID); e != nil {
 		_, _ = a.SendText(ctx, msg.Address, statusCardFailureText(e), msg.ID)
 		return nil
 	}
@@ -331,7 +339,7 @@ func (b *Bridge) OpenSessionStatusForThread(ctx context.Context, thread string) 
 	if s.Status != "active" || !s.Managed {
 		return diagnostics.UserError("请选择活跃的会话群或话题")
 	}
-	return b.enqueueSessionStatus(thread, true)
+	return b.showStatusAtBottom(s, "desktop-status:"+store.ID())
 }
 
 // 只报告展示故障，不更改events或重放问题。通知失败也不会递归产生通知。
@@ -384,4 +392,19 @@ func (b *Bridge) notifyStatusCardFailure(parent context.Context, thread string, 
 	if e != nil {
 		b.log.Warn("状态卡异常提醒未确认送达", "thread", thread, "error", diagnostics.Error(e))
 	}
+}
+
+// 与定时更新共用原卡锁；明确查询才生成新一代显示回执。
+func (b *Bridge) showStatusAtBottom(s store.Session, command string) error {
+	lock := b.statusCardLock(s.ThreadID)
+	lock.Lock()
+	view, err := b.store.ReadSessionStatus(s.ThreadID)
+	if err == nil {
+		err = b.store.RelocateStatusCard(s, view.Task.ID, command)
+	}
+	lock.Unlock()
+	if err != nil {
+		return err
+	}
+	return b.enqueueSessionStatus(s.ThreadID, true, view.Task.ID)
 }

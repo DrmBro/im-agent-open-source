@@ -81,6 +81,20 @@ func (b *Bridge) observeRequestRecovery(parent context.Context, p store.RequestP
 		_, _ = b.store.SaveRequestProbe(p, p.Offset, p.State, "恢复观察记录损坏，未重新扫描或执行")
 		return
 	}
+	if state.Outcome == "completed" && len(state.ReplyIDs) == 0 && state.ReplyIssue == "" {
+		recheck, cancel := context.WithTimeout(parent, 3*time.Second)
+		repaired, changed, readErr := b.codex.RecoverUnphasedCompletion(recheck, p.ThreadID, p.Path, p.UserItemID, p.OriginOffset, p.Offset, state)
+		cancel()
+		if readErr == nil && changed {
+			if raw, err := json.Marshal(repaired); err == nil {
+				saved, saveErr := b.store.SaveUnphasedReplyRecovery(p, string(raw))
+				if saveErr != nil || !saved {
+					return
+				}
+				p.State, state = string(raw), repaired
+			}
+		}
+	}
 	ctx, stop := context.WithTimeout(parent, 3*time.Second)
 	updated, next, e := b.codex.ReadRecoveryObservation(ctx, p.ThreadID, p.Path, p.Offset, p.UserItemID, state)
 	stop()
@@ -127,8 +141,12 @@ func (b *Bridge) observeRequestRecovery(parent context.Context, p store.RequestP
 				_, _ = b.store.SaveRequestProbe(p, p.Offset, p.State, "原回复位置或正文指纹未通过复核，未使用替代消息；稍后再核对")
 				return
 			}
-			for _, reply := range replies {
+			for index, reply := range replies {
 				entries = append(entries, b.mirrorEntry(reply, 0, b.markdownEnabled(s)))
+				location := updated.ReplyLocations[index]
+				if location.TurnID != "" {
+					_ = b.store.RecoverReplyPreview(p, updated.MatchedTurn, reply.ID, reply.Text, b.presentationFilter().Text(reply.Text), location.Timestamp)
+				}
 			}
 		}
 		e = b.store.SealObservedRequest(s, p, updated.ReplyIDs, updated.MatchedTurn, entries...)

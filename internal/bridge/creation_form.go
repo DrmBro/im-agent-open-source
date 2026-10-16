@@ -58,11 +58,11 @@ func (b *Bridge) openCreationForm(ctx context.Context, adapter im.Adapter, msg i
 	if !config.Contains(first.Efforts, effort) {
 		effort = first.Efforts[0]
 	}
-	f := store.CreationForm{ID: "new:" + store.ID(), Address: msg.Address, UserID: msg.UserID, Catalog: store.JSON(catalog), ExpiresAt: time.Now().Add(15 * time.Minute).Unix()}
+	f := store.CreationForm{ID: "new:" + store.ID(), Address: msg.Address, UserID: msg.UserID, Catalog: store.JSON(catalog), ExpiresAt: 0}
 	if e = b.store.PutCreationForm(f); e != nil {
 		return e
 	}
-	card := im.Card{Title: "新建 Codex 会话", ActionID: f.ID, Text: "项目与模型来自本机 Codex 目录。可在项目下拉框中搜索；多个根目录分别列出。选项只作用于新会话，不修改全局配置。15 分钟内有效。填写首问后只需提交一次，后台创建独立群并自动尝试执行；结果将显示在新群。", Form: &im.Form{SubmitLabel: "创建并开始", Fields: []im.FormField{
+	card := im.Card{Title: "新建 Codex 会话", ActionID: f.ID, Text: "项目与模型来自本机 Codex 目录。可在项目下拉框中搜索；多个根目录分别列出。选项只作用于新会话，不修改全局配置。表单不设等待期限，可稍后填写。填写首问后只需提交一次，后台创建独立群并自动尝试执行；结果将显示在新群。", Form: &im.Form{SubmitLabel: "创建并开始", Fields: []im.FormField{
 		{Name: "project", Label: "项目 / 工作目录", Placeholder: "搜索并选择项目", Required: true, Default: "automatic", Options: projectOptions},
 		{Name: "model", Label: "模型", Placeholder: "选择模型", Required: true, Default: first.Model, Options: models},
 		{Name: "effort", Label: "思考程度（必须受所选模型支持）", Placeholder: "选择思考程度", Required: true, Default: effort, Options: efforts},
@@ -80,8 +80,8 @@ func (b *Bridge) openCreationForm(ctx context.Context, adapter im.Adapter, msg i
 	return b.store.CreationMessage(f.ID, id)
 }
 func validateCreationInteraction(f store.CreationForm, in im.Interaction) error {
-	if f.State != "pending" || f.ExpiresAt <= time.Now().Unix() || f.UserID != in.UserID || f.MessageID == "" || f.MessageID != in.MessageID || f.Address.BaseKey() != in.Address.BaseKey() || (in.Address.TopicID != "" && f.Address.TopicID != in.Address.TopicID) {
-		return diagnostics.UserError("表单已提交、过期或不属于当前用户，请重新发送 /new")
+	if f.State != "pending" || (f.ExpiresAt != 0 && f.ExpiresAt <= time.Now().Unix()) || f.UserID != in.UserID || f.MessageID == "" || f.MessageID != in.MessageID || f.Address.BaseKey() != in.Address.BaseKey() || (in.Address.TopicID != "" && f.Address.TopicID != in.Address.TopicID) {
+		return diagnostics.UserError("表单已提交、失效或不属于当前用户，请重新发送 /new")
 	}
 	return nil
 }

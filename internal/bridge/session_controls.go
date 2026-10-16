@@ -35,6 +35,11 @@ func (b *Bridge) controlSession(in im.Interaction, event string) (store.Session,
 		return store.Session{}, diagnostics.UserError("无权操作此会话")
 	}
 	s, err := b.store.SessionForControlCard(in.Address, in.MessageID, event)
+	if err != nil && in.Choice == "refresh" {
+		if recovered := b.store.RecoverStatusCardReceipt(in.Address, event, in.MessageID, in.UserID); recovered == nil {
+			s, err = b.store.SessionForControlCard(in.Address, in.MessageID, event)
+		}
+	}
 	if err != nil {
 		return s, diagnostics.UserError("卡片与会话不匹配或已失效，请刷新状态")
 	}
@@ -54,8 +59,8 @@ func (b *Bridge) receiveSessionControl(ctx context.Context, in im.Interaction) e
 	form := strings.HasPrefix(in.ActionID, "session-form:")
 	if form {
 		c, err = b.store.SessionControl(strings.TrimPrefix(in.ActionID, "session-form:"))
-		if err != nil || c.Kind != "model" || c.State != "open" || c.ExpiresAt <= time.Now().Unix() {
-			return diagnostics.UserError("模型表单已处理或过期，请重新打开")
+		if err != nil || c.Kind != "model" || c.State != "open" || (c.ExpiresAt != 0 && c.ExpiresAt <= time.Now().Unix()) {
+			return diagnostics.UserError("模型表单已处理或失效，请重新打开")
 		}
 		event = c.EventID
 	} else if in.Choice != "model" && in.Choice != "interrupt" && in.Choice != "refresh" && in.Choice != "report" {
@@ -140,7 +145,7 @@ func (b *Bridge) openModelControl(ctx context.Context, s store.Session, event, m
 	if err != nil {
 		return err
 	}
-	c := store.SessionControl{ID: store.ID(), ThreadID: s.ThreadID, EventID: event, AddressKey: store.Hash(s.Address.Key()), MessageID: message, Kind: "model", Payload: store.JSON(modelControlForm{models, pref}), ExpiresAt: time.Now().Add(15 * time.Minute).Unix()}
+	c := store.SessionControl{ID: store.ID(), ThreadID: s.ThreadID, EventID: event, AddressKey: store.Hash(s.Address.Key()), MessageID: message, Kind: "model", Payload: store.JSON(modelControlForm{models, pref}), ExpiresAt: 0}
 	ok, err := b.store.PutSessionControl(c)
 	if err != nil {
 		return err
@@ -215,7 +220,8 @@ func modelFormCard(c store.SessionControl, card *im.Card) error {
 
 	card.ActionID = "session-form:" + c.ID
 	card.Buttons = nil
-	card.Text += "\n\n选择下一轮模型：保存不打断当前轮次，不自动重新发送问题。仅作用于此会话之后从飞书提交的请求。"
+	card.Title = "选择下一轮模型"
+	card.Text = "保存不打断当前轮次，不自动重新发送问题。仅作用于此会话之后从飞书提交的请求。\n表单可稍后处理，不设等待期限；最终回复仍在聊天中展示。"
 	card.Form = &im.Form{SubmitLabel: "保存下一轮模型", Fields: []im.FormField{
 		{Name: "model", Label: "模型", Required: true, Default: model, Options: models},
 		{Name: "effort", Label: "思考程度（需与模型匹配）", Required: true, Default: effort, Options: efforts},
@@ -269,9 +275,6 @@ func (b *Bridge) interruptCardTurn(ctx context.Context, s store.Session, event, 
 // 原卡上保留报告入口；控制按钮和表单均绑定同一平台回执。
 func (b *Bridge) addSessionControls(view store.SessionStatus, card *im.Card) {
 	s, event := view.Session, view.Task.ID
-	if event == "" {
-		return
-	}
 	card.ActionID = "session:" + event
 	if pref, err := b.store.SessionModel(s); err == nil && pref.Model != "" {
 		card.Text += "\n下一轮模型：" + pref.Model + " · " + pref.Effort + "（已保存）"
@@ -287,14 +290,13 @@ func (b *Bridge) addSessionControls(view store.SessionStatus, card *im.Card) {
 		case "interrupted":
 			card.Text += "\n本轮已中断，已执行操作不会回滚。"
 		}
-		if p.Preview != "" && p.Issue != "identity_conflict" {
-			label := "临时输出 · 尚未完成"
-			if p.EndedAt > 0 || p.Outcome != "" {
-				label = "最近公开输出 · 轮次已结束"
+		ended := p.EndedAt > 0 || p.Outcome != "" || view.Task.Status == "done" || view.Task.Status == "failed" || view.Result != nil && (view.Result.Execution == "completed" || view.Result.Execution == "failed")
+		if !ended {
+			if p.Preview != "" && p.Issue != "identity_conflict" {
+				card.Text += fmt.Sprintf("\n\n临时输出 · 尚未完成（%s）\n%s", telemetryTime(p.PreviewAt), p.Preview)
+			} else {
+				card.Text += "\n\n临时输出：等待可关联的公开文字。"
 			}
-			card.Text += fmt.Sprintf("\n\n%s（%s）\n%s", label, telemetryTime(p.PreviewAt), p.Preview)
-		} else {
-			card.Text += "\n\n临时输出：等待可关联的公开文字。"
 		}
 		if p.TurnID != "" && p.Issue != "identity_conflict" && p.EndedAt == 0 && p.Outcome == "" {
 			if action, err := b.store.SessionControl(interruptControlID(s.ThreadID, event, p.TurnID)); errors.Is(err, sql.ErrNoRows) {

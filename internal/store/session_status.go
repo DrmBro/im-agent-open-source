@@ -19,6 +19,7 @@ type SessionStatus struct {
 	Telemetry *telemetry.Report
 }
 type SessionStatusCard struct {
+	Generation                                                                int64
 	ThreadID, RequestID, AddressKey, MessageID, State, Digest, EventID, Error string
 	Attempts                                                                  int
 	UpdatedAt, NextAttempt                                                    int64
@@ -155,6 +156,10 @@ func (s *Store) ReadSessionRequestStatus(thread, request string) (SessionStatus,
 	}
 	view.Task = TaskRow{ThreadID: thread, Name: view.Name}
 	view.Telemetry = nil
+	view.Result = nil
+	if request == "" {
+		return view, nil
+	}
 	e = s.db.QueryRow(`SELECT id, status, stage, error_summary, created_at, updated_at
 FROM events
 WHERE id = ? AND chat_key = ?
@@ -215,14 +220,14 @@ LIMIT 32`, session.ThreadID, Hash(session.Address.Key()), enabled, time.Now().Un
 // 无request参数时仅供旧调用方查看最近更新的卡；展示链路始终显式传请求ID。
 func (s *Store) StatusCard(thread string, request ...string) (SessionStatusCard, error) {
 	var c SessionStatusCard
-	q := "SELECT thread_id,request_id,address_key,message_id,state,digest,event_id,error,attempts,updated_at,next_attempt FROM session_status_cards WHERE thread_id=?"
+	q := "SELECT thread_id,request_id,address_key,message_id,state,digest,event_id,error,attempts,updated_at,next_attempt,generation FROM session_status_cards WHERE thread_id=?"
 	args := []any{thread}
 	if len(request) > 0 {
 		q += " AND request_id=?"
 		args = append(args, request[0])
 	}
 	q += " ORDER BY updated_at DESC,rowid DESC LIMIT 1"
-	e := s.db.QueryRow(q, args...).Scan(&c.ThreadID, &c.RequestID, &c.AddressKey, &c.MessageID, &c.State, &c.Digest, &c.EventID, &c.Error, &c.Attempts, &c.UpdatedAt, &c.NextAttempt)
+	e := s.db.QueryRow(q, args...).Scan(&c.ThreadID, &c.RequestID, &c.AddressKey, &c.MessageID, &c.State, &c.Digest, &c.EventID, &c.Error, &c.Attempts, &c.UpdatedAt, &c.NextAttempt, &c.Generation)
 	return c, e
 }
 func statusRequestID(request []string) string {
