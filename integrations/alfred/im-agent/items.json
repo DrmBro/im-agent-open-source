@@ -1,0 +1,22 @@
+{
+  "items": [
+    {
+      "uid": "im-agent-client",
+      "title": "IM Agent · 打开客户端",
+      "subtitle": "打开配置与运行状态窗口，不依赖 Spotlight 索引",
+      "arg": "client",
+      "valid": true,
+      "match": "client app UI 客户端 窗口 配置",
+      "icon": { "type": "fileicon", "path": "/Applications/IM Agent.app" }
+    },
+    {
+      "uid": "im-agent-background",
+      "title": "IM Agent · 只启动后台",
+      "subtitle": "不弹客户端窗口；已运行时复用后台，不重跑旧任务",
+      "arg": "background",
+      "valid": true,
+      "match": "background bg service 后台 服务",
+      "icon": { "type": "fileicon", "path": "/Applications/IM Agent 后台.app" }
+    }
+  ]
+}

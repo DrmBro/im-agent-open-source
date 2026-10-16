@@ -1,0 +1,41 @@
+{
+  "work_dir": "",
+  "state_dir": "./data",
+  "codex": {
+    "binary": "",
+    "home": "",
+    "model": "",
+    "sandbox": "workspace-write",
+    "approval_policy": "untrusted",
+    "mode": "follow_local"
+  },
+  "connections": [
+    {
+      "id": "feishu-main",
+      "type": "feishu",
+      "allowed_users": [
+        "ou_your_open_id"
+      ],
+      "admin_users": [
+        "ou_your_open_id"
+      ],
+      "chat_name_prefix": "Codex",
+      "auto_create_chat": true
+    }
+  ],
+  "limits": {
+    "turn_timeout_seconds": 900,
+    "approval_timeout_seconds": 300,
+    "max_message_chars": 2000,
+    "max_input_chars": 24000,
+    "queue_size": 32,
+    "workers": 4,
+    "idle_push_ms": 3000
+  },
+  "watch": {
+    "enabled": false,
+    "connection_id": "feishu-main",
+    "interval_seconds": 10,
+    "import_existing": false
+  }
+}

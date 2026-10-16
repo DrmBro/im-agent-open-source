@@ -1,0 +1,24 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <key>Label</key>
+  <string>com.im-agent.bridge</string>
+  <key>ProgramArguments</key>
+  <array>
+    <string>/absolute/path/to/im-agent-cli</string>
+    <string>--data-dir</string>
+    <string>/absolute/path/to/IM Agent</string>
+  </array>
+  <key>WorkingDirectory</key>
+  <string>/absolute/path/to/im-agent</string>
+  <key>RunAtLoad</key>
+  <true/>
+  <key>KeepAlive</key>
+  <true/>
+  <key>StandardOutPath</key>
+  <string>/absolute/path/to/log/im-agent.stdout.log</string>
+  <key>StandardErrorPath</key>
+  <string>/absolute/path/to/log/im-agent.stderr.log</string>
+</dict>
+</plist>

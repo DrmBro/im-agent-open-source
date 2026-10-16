@@ -1,0 +1,28 @@
+config.json
+data/
+*.db
+*.db-shm
+*.db-wal
+.env
+.DS_Store
+
+# 桌面构建与运行数据
+build/bin/
+frontend/wailsjs/
+*.sqlite
+*.sqlite-journal
+*.sqlite-wal
+*.sqlite-shm
+*.db-journal
+*.lock
+
+# 本地联调、验收与私有分发材料
+.work/
+dist/
+go-mod-download.json
+THIRD_PARTY_NOTICES.txt
+
+# 本地助手协作记录不随开源快照发布
+AGENTS.md
+docs/superpowers/
+docs/releases/

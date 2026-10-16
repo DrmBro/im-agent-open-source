@@ -1,0 +1,13 @@
+{
+ "$schema": "https://wails.io/schemas/config.v2.json",
+ "name": "im-agent",
+ "outputfilename": "im-agent",
+ "frontend:dir": "frontend",
+ "frontend:install": "",
+ "frontend:build": "",
+ "frontend:dev:watcher": "",
+ "frontend:dev:serverUrl": "",
+ "wailsjsdir": "frontend/wailsjs",
+ "author": {"name": "IM Agent", "email": ""},
+ "info": {"companyName": "IM Agent", "productName": "IM Agent", "productVersion": "0.1.0", "copyright": "", "comments": "本地 IM 与 Codex 桥接客户端"}
+}

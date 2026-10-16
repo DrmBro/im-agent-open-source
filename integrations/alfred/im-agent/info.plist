@@ -1,0 +1,77 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <key>bundleid</key><string>io.im-agent.alfred-launcher</string>
+  <key>name</key><string>IM Agent 启动入口</string>
+  <key>createdby</key><string>IM Agent</string>
+  <key>description</key><string>输入 imagent 直接打开客户端或启动后台，不依赖 Spotlight。</string>
+  <key>category</key><string>Productivity</string>
+  <key>version</key><string>1.0</string>
+  <key>disabled</key><false/>
+  <key>readme</key><string>在 Alfred 输入 imagent，选择客户端或后台后回车。也可输入 imagent bg 筛选后台。本入口使用固定应用路径，不依赖 Spotlight。后台的单实例保护由 IM Agent 自身负责；不会重放旧任务，也不修改登录自启。</string>
+  <key>webaddress</key><string></string>
+  <key>variablesdontexport</key><array/>
+  <key>objects</key>
+  <array>
+    <dict>
+      <key>uid</key><string>IM-AGENT-CHOICES</string>
+      <key>type</key><string>alfred.workflow.input.scriptfilter</string>
+      <key>version</key><integer>3</integer>
+      <key>config</key>
+      <dict>
+        <key>keyword</key><string>imagent</string>
+        <key>title</key><string>IM Agent · 客户端与后台</string>
+        <key>subtext</key><string>选择直接打开客户端或只启动后台</string>
+        <key>runningsubtext</key><string>读取本地启动入口…</string>
+        <key>argumenttype</key><integer>1</integer>
+        <key>argumenttrimmode</key><integer>0</integer>
+        <key>argumenttreatemptyqueryasnil</key><false/>
+        <key>withspace</key><false/>
+        <key>alfredfiltersresults</key><true/>
+        <key>alfredfiltersresultsmatchmode</key><integer>0</integer>
+        <key>script</key><string>/bin/cat ./items.json</string>
+        <key>scriptfile</key><string></string>
+        <key>scriptargtype</key><integer>1</integer>
+        <key>type</key><integer>0</integer>
+        <key>escaping</key><integer>0</integer>
+        <key>queuemode</key><integer>1</integer>
+        <key>queuedelaymode</key><integer>0</integer>
+        <key>queuedelaycustom</key><integer>1</integer>
+        <key>queuedelayimmediatelyinitially</key><true/>
+      </dict>
+    </dict>
+    <dict>
+      <key>uid</key><string>IM-AGENT-LAUNCH</string>
+      <key>type</key><string>alfred.workflow.action.script</string>
+      <key>version</key><integer>2</integer>
+      <key>config</key>
+      <dict>
+        <key>script</key><string>/bin/bash ./launch.sh "$1"</string>
+        <key>scriptfile</key><string></string>
+        <key>scriptargtype</key><integer>1</integer>
+        <key>type</key><integer>0</integer>
+        <key>escaping</key><integer>0</integer>
+        <key>concurrently</key><false/>
+      </dict>
+    </dict>
+  </array>
+  <key>connections</key>
+  <dict>
+    <key>IM-AGENT-CHOICES</key>
+    <array>
+      <dict>
+        <key>destinationuid</key><string>IM-AGENT-LAUNCH</string>
+        <key>modifiers</key><integer>0</integer>
+        <key>modifiersubtext</key><string></string>
+        <key>vitoclose</key><false/>
+      </dict>
+    </array>
+  </dict>
+  <key>uidata</key>
+  <dict>
+    <key>IM-AGENT-CHOICES</key><dict><key>xpos</key><real>80</real><key>ypos</key><real>80</real></dict>
+    <key>IM-AGENT-LAUNCH</key><dict><key>xpos</key><real>360</real><key>ypos</key><real>80</real></dict>
+  </dict>
+</dict>
+</plist>
