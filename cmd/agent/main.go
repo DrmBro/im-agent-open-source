@@ -12,7 +12,6 @@ import (
 	"syscall"
 
 	"im-agent/internal/channels"
-	"im-agent/internal/channels/dingtalk"
 	"im-agent/internal/channels/feishu"
 	"im-agent/internal/daemon"
 	"im-agent/internal/preferences"
@@ -43,9 +42,6 @@ func run() error {
 	}
 	registry := channels.NewRegistry()
 	if e = feishu.Register(registry); e != nil {
-		return e
-	}
-	if e = dingtalk.Register(registry); e != nil {
 		return e
 	}
 	p, e := preferences.New(*dir, registry)

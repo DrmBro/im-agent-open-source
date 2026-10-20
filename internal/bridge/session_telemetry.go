@@ -85,6 +85,17 @@ func desktopSessionCard(view store.SessionStatus, now time.Time) im.Card {
 	if p.Issue != "" && p.Issue != "invalid_usage" {
 		text += "\n说明：最新轮次日志暂不可完整核对，未沿用历史任务结果。"
 	}
+	if p.EndedAt == 0 && p.Outcome == "" && p.Issue != "identity_conflict" && p.Issue != "read_failed" && p.Issue != "state_invalid" {
+		if p.Preview != "" {
+			label := "临时输出 · 尚未完成"
+			if p.PreviewScope == "session" {
+				label = "会话公开输出 · 轮次标识未匹配，尚未确认完成"
+			}
+			text += "\n\n" + label + "（" + telemetryTime(p.PreviewAt) + "）\n" + p.Preview
+		} else {
+			text += "\n\n临时输出：等待可关联的公开文字。"
+		}
+	}
 	if p.Outcome == "completed" {
 		text += "\n回复消息的送达情况请以群内实际消息为准。"
 	}

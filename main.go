@@ -19,7 +19,7 @@ import (
 	"im-agent/internal/desktop"
 )
 
-//go:embed frontend/index.html frontend/app.js frontend/style.css
+//go:embed frontend/index.html frontend/app.js frontend/task-board.js frontend/style.css
 var assets embed.FS
 
 func main() {

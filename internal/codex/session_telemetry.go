@@ -8,6 +8,7 @@ import (
 	"io"
 	"time"
 
+	"im-agent/internal/redact"
 	"im-agent/internal/telemetry"
 )
 
@@ -109,6 +110,29 @@ func (c *Client) LatestSessionTelemetry(ctx context.Context, thread string) (tel
 		if state.MatchedTurn != "" && !state.Halted {
 			if _, err = applyRequestTelemetry(&state, thread, row.Type, row.Payload, at); err != nil {
 				return telemetry.Snapshot{}, "", err
+			}
+		}
+		// 部分提供方在公开消息中保留提供方内部轮次 ID。
+		// 仅展示已核验会话文件中、当前轮次起点之后的公开文字；
+		// 明示会话级来源，不将其用于轮次输出时间、完成判断或操作授权。
+		if row.Type == "response_item" && state.MatchedTurn != "" && !state.Halted && state.Snapshot.EndedAt == 0 && state.MatchedUserCount == 1 {
+			var item struct {
+				ID, Type, Role, Phase string
+				Content               []InputContent
+				Meta                  struct {
+					TurnID string `json:"turn_id"`
+				} `json:"internal_chat_message_metadata_passthrough"`
+			}
+			if json.Unmarshal(row.Payload, &item) == nil && item.ID != "" && item.Type == "message" && item.Role == "assistant" && publicAssistantPhase(item.Phase) {
+				if item.Meta.TurnID != "" && item.Meta.TurnID != state.MatchedTurn {
+					if text, supported := exactReplyText(item.Content); supported && text != "" {
+						state.Snapshot.Preview = publicPreview(redact.New().Text(text))
+						state.Snapshot.PreviewAt = at
+						state.Snapshot.PreviewScope = "session"
+					}
+				} else if state.Snapshot.PreviewAt == at {
+					state.Snapshot.PreviewScope = ""
+				}
 			}
 		}
 	}

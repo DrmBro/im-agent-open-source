@@ -32,6 +32,7 @@ type Snapshot struct {
 	TurnID                   string `json:"turn_id,omitempty"`
 	Preview                  string `json:"preview,omitempty"`
 	PreviewAt                int64  `json:"preview_at,omitempty"`
+	PreviewScope             string `json:"preview_scope,omitempty"`
 	Outcome                  string `json:"outcome,omitempty"`
 	Model                    string `json:"model,omitempty"`
 	StartedAt                int64  `json:"started_at,omitempty"`

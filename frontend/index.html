@@ -11,6 +11,7 @@
   <div class="nav-label">工作台</div>
   <nav aria-label="主导航">
    <button class="nav active" data-page="overview"><span>◉</span>概览</button>
+   <button class="nav" data-page="board"><span>▤</span>任务看板</button>
    <button class="nav" data-page="connections"><span>▧</span>IM 连接</button>
    <button class="nav" data-page="codex"><span>⌘</span>Codex 配置</button>
    <button class="nav" data-page="limits"><span>≡</span>运行限制</button>
@@ -31,28 +32,35 @@
     <div class="stat-grid"><article class="panel stat"><span>已保存连接</span><strong id="connection-count">0</strong><small>只展示当前实现的渠道</small></article><article class="panel stat"><span>配置版本</span><strong id="revision">—</strong><small id="saved-time">尚未保存</small></article><article class="panel stat"><span>凭证策略</span><strong class="small-value">本机加密</strong><small>AES-GCM + 系统凭证库</small></article></div>
     <div class="columns"><article class="panel"><h3>首次使用</h3><ol class="steps"><li><b>添加 IM 连接</b><span>填写应用凭证和用户白名单。</span></li><li><b>无需设置全局工作目录</b><span>Codex 自动跟随本机配置；每个会话保留自己的目录。</span></li><li><b>保存后启动</b><span>正在运行时保存配置，需要停止并重新启动才会应用。</span></li></ol><button class="btn" data-go="connections">配置 IM 连接 →</button></article><article class="panel"><h3>本地存储</h3><p>普通配置与加密凭证保存在 SQLite，密钥不回显。业务会话数据独立保存。</p><label>配置数据库</label><code id="database-path">正在读取…</code><label>业务数据目录</label><code id="state-path">正在读取…</code><p class="muted">请勿同时运行旧机器人或另一桥接程序。进程运行不等于 IM、模型已连通。</p></article></div>
    </section>
-   <section id="page-connections" class="page" hidden><div class="page-heading"><div><p class="eyebrow">CHANNELS</p><h1>IM 连接</h1><p>每个连接独立配置。统一适配层，不把工作台绑定到单个 IM。</p></div><button id="add-connection" class="btn primary">＋ 新增连接</button></div><div id="connection-list"></div><div class="notice">钉钉用于业务范围内的群内问答；请在连接内配置人员与统一业务范围。飞书继续使用原有会话同步配置。</div></section>
-   <section id="page-codex" class="page" hidden><div class="page-heading"><div><p class="eyebrow">EXECUTION</p><h1>Codex 配置</h1><p>默认跟随 CC Switch 写入的本机 Codex 配置，不重复管理模型或中转密钥。</p></div></div><div class="panel form-panel" id="codex-fields"></div><article class="panel" id="desktop-connection-panel"><div class="connection-header"><div><h3>桌面启动与连接</h3><p>飞书已连接不等于桌面提交入口可用。此入口不依赖 Codex++ 程序，不修改模型或认证配置。</p></div><button id="desktop-launch-check" class="btn">检测桌面与连接入口</button></div><div class="field"><label for="desktop-launch-app">已识别的桌面应用</label><select id="desktop-launch-app" disabled><option value="">请先检测</option></select></div><div id="desktop-launch-status"><p class="muted">尚未检查；不会自动启动或关闭桌面应用。</p></div><button id="desktop-launch-start" class="btn primary" disabled>启动桌面并检查本机连接</button><p class="muted">首次兼容启动需要验证当前桌面版本。桌面已运行但无入口时，请先保存工作并自行退出，再检测和启动。不会自动杀进程、另开会话或重发问题。</p></article><div class="notice">自动检测 CLI 和当前用户配置。CC Switch 切换后，先停止再启动桥接；不会自动中断已有任务。只有自动检测失败时，才需要展开高级设置。</div></section>
+   <section id="page-connections" class="page" hidden><div class="page-heading"><div><p class="eyebrow">CHANNELS</p><h1>IM 连接</h1><p>每个连接独立配置。统一适配层，不把工作台绑定到单个 IM。</p></div><button id="add-connection" class="btn primary">＋ 新增连接</button></div><div id="connection-list"></div><div class="notice">当前仅支持飞书渠道，不提供其他渠道的占位配置。</div></section>
+   <section id="page-codex" class="page" hidden><div class="page-heading"><div><p class="eyebrow">EXECUTION</p><h1>Codex 配置</h1><p>默认跟随 CC Switch 写入的本机 Codex 配置，不重复管理模型或中转密钥。</p></div></div><div class="panel form-panel" id="codex-fields"></div><article class="panel"><div class="connection-header"><div><h3>桌面启动与连接</h3><p>飞书已连接不等于桌面提交入口可用。此入口不依赖 Codex++ 程序，不修改模型或认证配置。</p></div><button id="desktop-launch-check" class="btn">检测桌面与连接入口</button></div><div class="field"><label for="desktop-launch-app">已识别的桌面应用</label><select id="desktop-launch-app" disabled><option value="">请先检测</option></select></div><div id="desktop-launch-status"><p class="muted">尚未检查；不会自动启动或关闭桌面应用。</p></div><button id="desktop-launch-start" class="btn primary" disabled>启动桌面并检查本机连接</button><p class="muted">首次兼容启动需要验证当前桌面版本。桌面已运行但无入口时，请先保存工作并自行退出，再检测和启动。不会自动杀进程、另开会话或重发问题。</p></article><div class="notice">自动检测 CLI 和当前用户配置。CC Switch 切换后，先停止再启动桥接；不会自动中断已有任务。只有自动检测失败时，才需要展开高级设置。</div></section>
    <section id="page-limits" class="page" hidden><div class="page-heading"><div><p class="eyebrow">GUARDRAILS</p><h1>运行限制</h1><p>控制资源与任务边界。保存仅更新配置，不会中断当前执行。</p></div></div><div class="panel form-grid" id="limit-fields"></div></section>
    <section id="page-watch" class="page" hidden><div class="page-heading"><div><p class="eyebrow">SESSION SYNC</p><h1>会话同步</h1><p>可选地发现本机 Codex 的多个会话目录，并按连接设置映射到独立群或共享群内的话题。</p></div></div><div class="panel form-panel" id="watch-fields"></div><article class="panel presentation-panel"><div class="connection-header"><div><h3>会话话题、名称与历史</h3><p>共享群下按话题集中展示会话，旧独立群保留；各话题保留最新摘要卡片，启用后的新消息逐条追加到话题底部。</p></div><button id="refresh-presentations" class="btn">刷新记录</button></div><div id="presentation-error" class="notice warning" hidden></div><div id="presentation-list"><p class="muted">进入此页后加载补齐记录。</p></div><p class="muted">历史卡片只展示摘要，不执行；实时用户消息和最终助手回复另外逐条追加。没有名称时显示“未命名会话”；未知送达结果不会自动重发。旧无创建证明群和关闭中的会话不自动处理。</p></article><article class="panel closure-panel"><div class="connection-header"><div><h3>会话归档同步</h3><p>话题模式：归档只标记话题入口，保留共享群。独立群模式：归档解散对应自建群；群真正解散后归档 Codex。</p></div><button id="refresh-closures" class="btn">刷新记录</button></div><div id="closure-warning" class="notice warning" hidden></div><div id="closure-list"><p class="muted">切换到此页面后加载最近同步记录。</p></div><p class="muted">共享群、话题删除或消息撤回暂不触发反向批量归档。只解散有客户端创建证明的独立群；旧版本或手动绑定群默认受保护。失败会退避重试，可手动提前重试；取消归档不自动恢复群。</p></article><div class="notice warning">开启后可能创建群聊或话题并分享会话信息。共享群成员可见其中的会话内容，白名单不隔离阅读权限。导入历史会话前，请确认目标连接的管理员名单和会话范围；未设置默认项目时扫描多个会话目录。</div></section>
+   <section id="page-board" class="page" hidden>
+    <div class="page-heading"><div><p class="eyebrow">TASK BOARD</p><h1>任务看板</h1><p>集中查看 IM 会话请求，按实际执行和送达记录跟进。</p></div><button id="board-refresh" type="button" class="btn">刷新看板</button></div>
+    <div class="board-sync"><span id="board-sync-time" role="status">进入页面后读取任务</span><span>约每 5 秒自动刷新</span></div>
+    <div id="board-error" class="notice warning" role="status" hidden></div>
+    <div id="board-warning" class="notice warning" hidden></div>
+    <div id="board-stats" class="board-stats" aria-label="按任务状态筛选"></div>
+    <form id="board-filters" class="panel board-filters" role="search">
+     <div class="field"><label for="board-search">搜索任务</label><input id="board-search" type="search" maxlength="200" placeholder="会话名称、连接或任务编号" autocomplete="off"></div>
+     <div class="field"><label for="board-source">任务来源</label><select id="board-source"><option value="">全部来源</option><option value="session">IM 会话请求</option></select></div>
+     <button class="btn primary" type="submit">搜索</button><button id="board-reset" class="btn" type="button">重置</button>
+    </form>
+    <p class="muted board-scope">每条记录代表一次 IM 输入请求。执行结束与回复送达分别核对；结果未确认时保持需要关注。统计覆盖符合条件的全部保留记录。</p>
+    <div class="board-layout">
+     <article class="panel board-list-panel" aria-labelledby="board-list-title">
+      <div class="board-list-heading"><h3 id="board-list-title">全部任务</h3><span id="board-total" class="muted"></span></div>
+      <div id="board-list"><p class="muted">正在准备任务列表…</p></div>
+      <div class="board-pager"><button id="board-prev" class="btn small" type="button" disabled>上一页</button><span id="board-page" class="muted">第 1 页</span><button id="board-next" class="btn small" type="button" disabled>下一页</button><label for="board-size" class="muted">每页</label><select id="board-size"><option value="20">20 条</option><option value="50">50 条</option></select></div>
+     </article>
+     <aside id="board-detail" class="panel board-detail" aria-labelledby="board-detail-title">
+      <h3 id="board-detail-title">任务详情</h3><p class="muted">选择一条任务，查看处理阶段、执行与送达证据及任务报告。</p>
+     </aside>
+    </div>
+   </section>
    <section id="page-tasks" class="page" hidden>
-    <div class="page-heading"><div><p class="eyebrow">TASKS &amp; FILES</p><h1>任务与附件</h1><p>飞书列表独立分页，已结束且无需恢复的历史保留7天；钉钉问答保留用于续聊，待处理和未知结果不自动清理。重试投递不会重新执行模型。</p></div><button id="refresh-tasks" class="btn">刷新</button></div>
-    <article class="panel" id="qa-panel" hidden>
-     <h3>钉钉业务问答、进度与文档</h3>
-     <p>直接 @新开问答，引用机器人回答并 @续聊。引用回执或回答并 @发送 /status 或“进度”可查询，无需填写编号。业务范围为空时仅 /whoami 和状态查询可用。</p>
-     <p class="notice">处理阶段来自实际记录，连接活跃不代表模型正在工作。消息处理、模型完成、消息送达与事项完成分别展示；需求与业务 Bug 通过 grill-me 澄清后生成本机中文 Markdown，模型完成不代表事项完成。</p>
-     <div id="qa-list"></div>
-     <section class="qa-documents" aria-labelledby="qa-documents-heading">
-      <h4 id="qa-documents-heading">本机业务文档</h4>
-      <p class="muted">点击“查看文档”后才读取本机正文，可在此阅读或复制；正文不会自动发送到钉钉或远端网络。</p>
-      <div id="qa-document-list"></div>
-      <section id="qa-document-reader" class="qa-document-reader" aria-labelledby="qa-document-title" hidden>
-       <div class="qa-row-heading"><h4 id="qa-document-title">文档正文</h4><div class="qa-actions"><button id="qa-document-copy" type="button" class="btn small" disabled>复制正文</button><button id="qa-document-close" type="button" class="btn small">关闭文档</button></div></div>
-       <p id="qa-document-status" role="status" aria-live="polite"></p>
-       <textarea id="qa-document-markdown" rows="18" readonly spellcheck="false" aria-label="本机 Markdown 文档正文" hidden></textarea>
-      </section>
-     </section>
-    </article>
+    <div class="page-heading"><div><p class="eyebrow">TASKS &amp; FILES</p><h1>任务与附件</h1><p>各列表独立分页；已结束且无需恢复的本地历史内容保留7天，待处理和未知结果不清理。重试投递不会重新执行模型。</p></div><button id="refresh-tasks" class="btn">刷新</button></div>
     <article class="panel"><p class="muted">会话小卡片支持选择下一轮模型、中断对应轮次和查看公开临时输出。模型切换不打断当前任务；新会话使用 /new。</p><h3>发送本地文件到会话群</h3><p>仅支持该会话工作目录内的普通文件，最大 20 MiB。发送前确认内容可分享给群成员。</p><div id="file-send-fields"></div><button id="session-status" class="btn">显示会话控制小卡片</button><button id="new-form" class="btn">在所选会话群打开新建表单</button><button id="send-file" class="btn primary">选择文件并确认发送</button><p id="file-send-status" class="muted"></p></article>
     <article class="panel"><h3>草稿恢复（仅本机）</h3><p>暂存草稿只在本机加密保存。下方默认只显示记录，查看原文需要逐条确认；不会自动粘贴或重发。恢复前请核对目标会话，避免覆盖现有输入。已恢复的备份仍保留。原始换行需精确保留时，可显式导出到可信的本机明文文件；请避开云同步目录。</p><div id="desktop-draft-list"></div></article>
     <article class="panel"><h3>需要处理的消息投递</h3><p>未知结果请先查看群内消息；人工确认未收到后重试可能产生重复，不能保证平台恰好一次。</p><div id="delivery-list"></div></article>
@@ -65,5 +73,6 @@
  <div id="busy" class="busy" hidden aria-live="polite">正在处理，请稍候…</div>
  <dialog id="confirm-dialog"><h2 id="confirm-title"></h2><p id="confirm-message"></p><div class="dialog-actions"><button id="confirm-no" class="btn">取消</button><button id="confirm-yes" class="btn primary">确认</button></div></dialog>
  <script src="/app.js" defer></script>
+ <script src="/task-board.js" defer></script>
 </body>
 </html>

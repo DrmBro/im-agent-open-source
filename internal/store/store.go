@@ -187,15 +187,6 @@ WHERE status = 'processing' AND NOT EXISTS
 		db.Close()
 		return nil, e
 	}
-	if e = s.migrateQA(); e != nil {
-		db.Close()
-		return nil, e
-	}
-	if e = s.RecoverQA(); e != nil {
-		db.Close()
-		return nil, e
-	}
-
 	opened = true
 	return s, nil
 }

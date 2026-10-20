@@ -41,8 +41,6 @@ type Connection struct {
 	AutoCreateChat   bool              `json:"auto_create_chat"`
 	ConversationMode string            `json:"conversation_mode"`
 	SharedChatID     string            `json:"shared_chat_id"`
-	BusinessScope    string            `json:"business_scope,omitempty"`
-	BusinessFiles    []string          `json:"business_files,omitempty"`
 	Credentials      map[string]string `json:"-"`
 }
 type Limits struct {
@@ -208,28 +206,7 @@ func validate(c Config, base string, requireConnections bool) (Config, error) {
 			return c, errors.New("连接 ID 无效或重复")
 		}
 		ids[x.ID] = true
-		x.BusinessScope = strings.TrimSpace(x.BusinessScope)
-		if len([]rune(x.BusinessScope)) > 8000 || strings.ContainsRune(x.BusinessScope, '\x00') {
-			return c, errors.New("业务范围说明最多 8000 字符，不能包含 NUL")
-		}
-		if len(x.BusinessFiles) > 32 {
-			return c, errors.New("业务资料最多配置 32 个文件")
-		}
-		for j, file := range x.BusinessFiles {
-			file = strings.TrimSpace(file)
-			if file == "" || len(file) > 2048 || strings.ContainsAny(file, "\x00\r\n") {
-				return c, errors.New("业务资料文件路径无效")
-			}
-			if !filepath.IsAbs(file) && !strings.HasPrefix(file, "~/") {
-				return c, errors.New("业务资料文件必须使用绝对路径")
-			}
-			x.BusinessFiles[j] = resolve(file)
-		}
-		identityOnly := x.Type == "dingtalk" && len(x.AllowedUsers) == 0 && len(x.AdminUsers) == 0
-		if !identityOnly && (len(x.AllowedUsers) == 0 || len(x.AdminUsers) == 0 || len(x.AllowedUsers) > 500 || len(x.AdminUsers) > 49) {
-			if x.Type == "dingtalk" {
-				return c, errors.New("钉钉识别模式请将白名单和管理员同时留空；启用问答时白名单需 1..500 人，管理员需 1..49 人")
-			}
+		if len(x.AllowedUsers) == 0 || len(x.AdminUsers) == 0 || len(x.AllowedUsers) > 500 || len(x.AdminUsers) > 49 {
 			return c, errors.New("白名单必须为 1..500 人，管理员必须为 1..49 人，禁止默认全员开放")
 		}
 		for _, u := range append(append([]string{}, x.AllowedUsers...), x.AdminUsers...) {
@@ -261,9 +238,6 @@ func validate(c Config, base string, requireConnections bool) (Config, error) {
 			return c, errors.New("watch 连接或轮询间隔无效")
 		}
 		for _, x := range c.Connections {
-			if x.ID == c.Watch.ConnectionID && x.Type == "dingtalk" {
-				return c, errors.New("钉钉群问答不使用桌面会话自动发现")
-			}
 			if x.ID == c.Watch.ConnectionID && !x.AutoCreateChat {
 				return c, errors.New("自动发现需要 auto_create_chat")
 			}
