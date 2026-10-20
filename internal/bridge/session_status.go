@@ -31,9 +31,12 @@ func sessionStatusStage(stage string) string {
 }
 
 // 状态只说明本次请求已确认的边界；桌面提交不等于模型轮次已开始。
-func readonlySessionCard(view store.SessionStatus, _ time.Time) im.Card {
+func readonlySessionCard(view store.SessionStatus, now time.Time) im.Card {
 	result := view.Result
 	state := "状态待核对"
+	if view.Desktop != nil {
+		return desktopSessionCard(view, now)
+	}
 	switch {
 	case view.Task.ID == "":
 		state = "尚无请求记录"
@@ -110,7 +113,9 @@ func (b *Bridge) refreshRequestStatus(ctx context.Context, thread string, force 
 	var view store.SessionStatus
 	var e error
 	if request == nil {
-		view, e = b.store.ReadSessionStatus(thread)
+		view, e = b.readCurrentSessionStatus(ctx, thread, false)
+	} else if *request == "" {
+		view, e = b.readCurrentSessionStatus(ctx, thread, true)
 	} else {
 		view, e = b.store.ReadSessionRequestStatus(thread, *request)
 	}
@@ -140,7 +145,11 @@ func (b *Bridge) refreshRequestStatus(ctx context.Context, thread string, force 
 		if e != nil {
 			return e
 		}
-		if !force && (view.Task.ID == "" || view.Task.ReceivedAt < enabled) {
+		received := view.Task.ReceivedAt
+		if view.Desktop != nil {
+			received = view.Desktop.StartedAt / 1000
+		}
+		if !force && (received == 0 || received < enabled) {
 			return nil
 		}
 	} else {
@@ -279,8 +288,11 @@ func (b *Bridge) syncSessionStatusCards(ctx context.Context) {
 					return
 				}
 
-				if pending, err := b.store.EmptyStatusCardNeedsRefresh(s); err == nil && pending {
+				// 会话概览卡跟随桌面新轮次；原 IM 请求卡仍按请求分别更新。
+				if card, err := b.store.StatusCard(s.ThreadID, ""); err == nil && card.MessageID != "" {
 					_ = b.enqueueSessionStatus(s.ThreadID, false, "")
+				} else {
+					_ = b.enqueueSessionStatus(s.ThreadID, false)
 				}
 				requests, readErr := b.store.PendingSessionStatusRequests(s)
 				if readErr != nil {
@@ -313,14 +325,14 @@ func (b *Bridge) sessionStatusCommand(ctx context.Context, a im.Adapter, msg im.
 		return e
 	}
 	if !s.Managed || !a.Capabilities().InteractiveCards || !a.Capabilities().UpdateCard {
-		view, e := b.store.ReadSessionStatus(s.ThreadID)
+		view, e := b.readCurrentSessionStatus(ctx, s.ThreadID, false)
 		if e != nil {
 			return e
 		}
 		_, e = a.SendText(ctx, msg.Address, readonlySessionCard(view, time.Now()).Text, msg.ID)
 		return e
 	}
-	if e = b.showStatusAtBottom(s, msg.ID); e != nil {
+	if e = b.showStatusAtBottom(ctx, s, msg.ID); e != nil {
 		_, _ = a.SendText(ctx, msg.Address, statusCardFailureText(e), msg.ID)
 		return nil
 	}
@@ -339,7 +351,7 @@ func (b *Bridge) OpenSessionStatusForThread(ctx context.Context, thread string) 
 	if s.Status != "active" || !s.Managed {
 		return diagnostics.UserError("请选择活跃的会话群或话题")
 	}
-	return b.showStatusAtBottom(s, "desktop-status:"+store.ID())
+	return b.showStatusAtBottom(ctx, s, "desktop-status:"+store.ID())
 }
 
 // 只报告展示故障，不更改events或重放问题。通知失败也不会递归产生通知。
@@ -395,10 +407,10 @@ func (b *Bridge) notifyStatusCardFailure(parent context.Context, thread string, 
 }
 
 // 与定时更新共用原卡锁；明确查询才生成新一代显示回执。
-func (b *Bridge) showStatusAtBottom(s store.Session, command string) error {
+func (b *Bridge) showStatusAtBottom(ctx context.Context, s store.Session, command string) error {
 	lock := b.statusCardLock(s.ThreadID)
 	lock.Lock()
-	view, err := b.store.ReadSessionStatus(s.ThreadID)
+	view, err := b.readCurrentSessionStatus(ctx, s.ThreadID, false)
 	if err == nil {
 		err = b.store.RelocateStatusCard(s, view.Task.ID, command)
 	}

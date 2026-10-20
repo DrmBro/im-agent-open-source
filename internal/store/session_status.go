@@ -11,6 +11,7 @@ import (
 )
 
 type SessionStatus struct {
+	Desktop   *telemetry.Snapshot
 	Session   Session
 	Name      string
 	Task      TaskRow

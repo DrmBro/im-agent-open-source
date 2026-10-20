@@ -10,6 +10,7 @@ import (
 
 	wruntime "github.com/wailsapp/wails/v2/pkg/runtime"
 	"im-agent/internal/channels"
+	"im-agent/internal/channels/dingtalk"
 	"im-agent/internal/channels/feishu"
 	"im-agent/internal/codex"
 	"im-agent/internal/config"
@@ -48,6 +49,10 @@ func (a *App) Startup(parent context.Context) {
 	defer a.mu.Unlock()
 	a.ctx, a.cancel = context.WithCancel(parent)
 	if e := feishu.Register(a.registry); e != nil {
+		a.initError = "渠道注册失败"
+		return
+	}
+	if e := dingtalk.Register(a.registry); e != nil {
 		a.initError = "渠道注册失败"
 		return
 	}

@@ -26,6 +26,10 @@ func (a Address) IsTopic() bool   { return a.TopicID != "" }
 func (a Address) Parent() Address { a.TopicID = ""; a.RootMessageID = ""; return a }
 
 type Message struct {
+	// ReplyToIDs 仅保存平台可核实的引用标识，不按正文猜测会话。
+	ReplyToIDs       []string
+	HasReply         bool
+	SenderName       string
 	Attachments      []Attachment
 	Address          Address
 	ID, UserID, Text string

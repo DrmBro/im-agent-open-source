@@ -18,6 +18,7 @@ import (
 	"time"
 
 	"im-agent/internal/channels"
+	"im-agent/internal/channels/dingtalk"
 	"im-agent/internal/channels/feishu"
 	"im-agent/internal/preferences"
 	"im-agent/internal/service"
@@ -99,7 +100,7 @@ func decode(r *http.Request, v any) error {
 	return nil
 }
 
-// Run 独占控制锁；业务锁仍由 Store 管理。意图只记录运行/停止，绝不恢复模型输入。
+// Run 独占控制锁；业务锁仍由 Store 管理。意图只记录运行/停止；钉钉仅恢复账本中未提交的队列，不重放未知执行。
 func Run(parent context.Context, dir string) error {
 	if err := secureDirectory(dir); err != nil {
 		return err
@@ -138,6 +139,9 @@ func Run(parent context.Context, dir string) error {
 	}
 	reg := channels.NewRegistry()
 	if err = feishu.Register(reg); err != nil {
+		return err
+	}
+	if err = dingtalk.Register(reg); err != nil {
 		return err
 	}
 	prefs, err := preferences.New(dir, reg)
@@ -233,6 +237,7 @@ func Run(parent context.Context, dir string) error {
 		reply(w, response{}, control.RetryClosure(body.Thread))
 	})
 	registerOperations(mux, control, filepath.Join(dir, "runtime"))
+	registerQAOperations(mux, control)
 	server := &http.Server{Handler: Authenticated(token, mux), ReadHeaderTimeout: 3 * time.Second, ReadTimeout: 10 * time.Second, WriteTimeout: 100 * time.Second, IdleTimeout: 30 * time.Second}
 	done := make(chan error, 1)
 	go func() { done <- server.Serve(listener) }()

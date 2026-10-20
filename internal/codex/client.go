@@ -37,33 +37,55 @@ type Notice struct {
 }
 type Handler func(context.Context, string, json.RawMessage) (any, error)
 type Client struct {
-	cmd              *exec.Cmd
-	in               io.WriteCloser
-	ctx              context.Context
-	cancel           context.CancelFunc
-	done             chan struct{}
-	write            sync.Mutex
-	mu               sync.Mutex
-	pending          map[string]chan Frame
-	subMu            sync.Mutex
-	subs             map[string]chan Notice
-	next             atomic.Int64
-	handler          Handler
-	handlerMu        sync.RWMutex
-	requests         chan struct{}
-	wg               sync.WaitGroup
-	archived         chan string
-	pendingReads     map[string]bool
-	rolloutHistories sync.Map
-	freshThreads     sync.Map
-	transport        *localTransport
-	runtimeConfig    config.Config
-	nativeMu         sync.Mutex
-	nativeTurns      map[string]*nativeSubmission
-	desktopTurns     map[string]context.CancelFunc
+	cmd               *exec.Cmd
+	in                io.WriteCloser
+	ctx               context.Context
+	cancel            context.CancelFunc
+	done              chan struct{}
+	write             sync.Mutex
+	mu                sync.Mutex
+	pending           map[string]chan Frame
+	subMu             sync.Mutex
+	subs              map[string]chan Notice
+	next              atomic.Int64
+	handler           Handler
+	handlerMu         sync.RWMutex
+	requests          chan struct{}
+	wg                sync.WaitGroup
+	archived          chan string
+	pendingReads      map[string]bool
+	rolloutHistories  sync.Map
+	freshThreads      sync.Map
+	transport         *localTransport
+	runtimeConfig     config.Config
+	qaDisabledServers map[string]bool
+	nativeMu          sync.Mutex
+	nativeTurns       map[string]*nativeSubmission
+	desktopTurns      map[string]context.CancelFunc
 }
 
 func Start(parent context.Context, c config.Config) (*Client, error) {
+	return start(parent, c, false)
+}
+
+// StartQA 复用本机模型与认证，独立业务进程关闭主机及连接器工具。
+func StartQA(parent context.Context, c config.Config) (*Client, error) {
+	c.Codex.SubmissionMode = "direct"
+	client, err := start(parent, c, true)
+	if err != nil {
+		return nil, err
+	}
+	check, stop := context.WithTimeout(parent, 20*time.Second)
+	err = client.assertQAToolIsolation(check)
+	stop()
+	if err != nil {
+		client.Close()
+		return nil, err
+	}
+	return client, nil
+}
+
+func start(parent context.Context, c config.Config, inheritPolicy bool) (*Client, error) {
 	ctx, cancel := context.WithCancel(parent)
 	nativeMode := false
 	var transport *localTransport
@@ -75,7 +97,17 @@ func Start(parent context.Context, c config.Config) (*Client, error) {
 			return nil, e
 		}
 	}
-	args := []string{"app-server", "-c", "approval_policy=" + strconv.Quote(c.Codex.ApprovalPolicy), "-c", "sandbox_mode=" + strconv.Quote(c.Codex.Sandbox)}
+	args := []string{"app-server"}
+	if !inheritPolicy {
+		args = append(args, "-c", "approval_policy="+strconv.Quote(c.Codex.ApprovalPolicy), "-c", "sandbox_mode="+strconv.Quote(c.Codex.Sandbox))
+	} else {
+		overrides, err := qaRuntimeOverrides(c)
+		if err != nil {
+			cancel()
+			return nil, err
+		}
+		args = append(args, overrides...)
+	}
 	if nativeMode {
 		args = append(args, "--listen", "ws://127.0.0.1:0", "--ws-auth", "capability-token", "--ws-token-sha256", transport.tokenDigest, "--enable", "default_mode_request_user_input")
 	} else {
@@ -98,7 +130,7 @@ func Start(parent context.Context, c config.Config) (*Client, error) {
 
 	for _, entry := range append([]string(nil), env...) {
 		name, _, _ := strings.Cut(entry, "=")
-		if strings.HasPrefix(name, "FEISHU_") || strings.HasPrefix(name, "LARK_") || strings.HasPrefix(name, "IM_AGENT_FEISHU_") {
+		if strings.HasPrefix(name, "FEISHU_") || strings.HasPrefix(name, "LARK_") || strings.HasPrefix(name, "IM_AGENT_FEISHU_") || strings.HasPrefix(name, "DINGTALK_") {
 			env = removeEnv(env, name)
 		}
 	}

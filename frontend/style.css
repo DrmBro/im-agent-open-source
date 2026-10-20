@@ -24,3 +24,27 @@ body.working main{pointer-events:none;opacity:.82}body.working header{pointer-ev
 .connection-fold>summary p{margin:0}
 .connection-fold[open]>.connection-fields{border-top:1px solid var(--border);margin-top:16px;padding-top:16px}
 .connection-fields>.danger{margin-bottom:16px}
+
+.qa-request-detail{white-space:pre-wrap;overflow-wrap:anywhere;max-height:320px;overflow:auto;font-size:12px;padding:12px;background:#f5f7f8;border-radius:8px}.qa-request-detail:empty{display:none}
+
+/* 钉钉进度使用实际阶段；文档正文仅在本机按需读取。 */
+#qa-panel{margin-bottom:22px}
+.qa-row-heading{display:flex;align-items:flex-start;justify-content:space-between;gap:12px;flex-wrap:wrap}
+.qa-row-heading>strong{flex:1;min-width:180px;white-space:pre-wrap;overflow-wrap:anywhere}
+.qa-row-heading h4{margin:0;overflow-wrap:anywhere}
+.qa-stage{display:inline-block;max-width:100%;padding:5px 9px;border:1px solid #dce5e1;border-radius:6px;background:#f2f5f3;color:#536a5d;font-size:11px;line-height:1.7;overflow-wrap:anywhere}
+.qa-stage-waiting{border-color:#ead6aa;background:#fff6e5;color:#856020}
+.qa-stage-error{border-color:#eacfc9;background:#fff1eb;color:#a45744}
+.qa-stage-sent{border-color:#c9dfd2;background:#edf7f0;color:#376c4e}
+.qa-progress-detail{color:#4a5e55;white-space:pre-wrap;overflow-wrap:anywhere}
+.qa-progress-meta{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:12px 20px;margin:12px 0;padding:14px;background:#f5f8f6;border-radius:8px}
+.qa-progress-meta dt{font-size:11px;color:#7b8b86;margin-bottom:5px}
+.qa-progress-meta dd{margin:0;color:#445953;font-size:12px;line-height:1.7;overflow-wrap:anywhere}
+.qa-turn>.notice{margin-top:10px}
+.qa-documents{margin-top:24px;border-top:1px solid var(--border);padding-top:8px}
+.qa-artifact .btn{margin-top:0}
+.qa-artifact-path,.qa-artifact-digest{font-family:ui-monospace,SFMono-Regular,monospace;font-size:11px;overflow-wrap:anywhere}
+.qa-document-reader{margin-top:16px;border:1px solid #dce5e1;border-radius:8px;padding:16px;min-width:0}
+.qa-actions{display:flex;gap:8px;flex-wrap:wrap}
+#qa-document-markdown{display:block;box-sizing:border-box;width:100%;min-height:280px;max-height:70vh;resize:vertical;padding:14px;border:1px solid #dce5e1;border-radius:7px;background:#f8faf9;color:#33483e;font-family:ui-monospace,SFMono-Regular,monospace;font-size:12px;line-height:1.8;white-space:pre-wrap;overflow-wrap:anywhere}
+@media(max-width:760px){.qa-progress-meta{grid-template-columns:1fr}.qa-document-reader{padding:12px}.qa-row-heading>strong{min-width:0;flex-basis:100%}}
