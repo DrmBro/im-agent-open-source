@@ -67,7 +67,7 @@ func (b *Bridge) importCodexThreads(ctx context.Context) {
 			bound++
 			continue
 		} else if !errors.Is(err, sql.ErrNoRows) {
-			b.scanDiagnostic("failed", "读取会话映射数据库失败")
+			b.scanDiagnostic("failed", "读取会话映射数据库失败："+diagnostics.Error(err))
 			return
 		}
 		if owned, e := b.store.CreationOwnedThread(thread.ID); e != nil {

@@ -14,6 +14,8 @@ frontend/wailsjs/
 *.sqlite-wal
 *.sqlite-shm
 *.db-journal
+*.errors.jsonl
+*.errors.jsonl.1
 *.lock
 
 # 本地联调、验收与私有分发材料

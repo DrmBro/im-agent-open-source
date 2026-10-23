@@ -83,6 +83,7 @@ $HOME/Library/Application Support/IM Agent
 | --- | --- |
 | `desktop.sqlite` | 桌面配置、配置历史、加密凭证密文 |
 | `runtime/` | 桥接业务数据库、会话映射、投递账本、状态卡和工作目录索引 |
+| `runtime/sessions.db.errors.jsonl`、`desktop.sqlite.errors.jsonl` | 事务提交或回滚失败的本机诊断，只含时间、阶段、SQLite 数字错误码和项目函数名；每份最多 256 KiB，另保留一份 `.1` 轮转文件，权限为 `0600` |
 | `bin/im-agent-service` | 客户端复制的稳定后台二进制 |
 | `control.sock`、`control.token` | 仅本机同用户访问的控制接口 |
 | macOS 钥匙串 | 保存用于解开本机凭证密文的主密钥 |

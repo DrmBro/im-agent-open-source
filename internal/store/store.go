@@ -9,7 +9,7 @@ import (
 	"errors"
 	"fmt"
 	"im-agent/internal/im"
-	_ "modernc.org/sqlite"
+	"im-agent/internal/sqlitedb"
 	"os"
 	"path/filepath"
 	"time"
@@ -84,14 +84,14 @@ func New(dir string) (*Store, error) {
 		return nil, e
 	}
 	f.Close()
-	db, e := sql.Open("sqlite", p)
+	db, e := sqlitedb.Open(p, "busy_timeout(5000)", "foreign_keys(1)")
 	if e != nil {
 		return nil, e
 	}
 	db.SetMaxOpenConns(1)
 	s := &Store{db: db, unlock: unlock}
 	// 单写连接和 DELETE 日志避免旧 SQLite WAL-reset 风险；不擅自覆盖已有业务记录。
-	for _, q := range []string{"PRAGMA journal_mode=DELETE", "PRAGMA busy_timeout=5000", "PRAGMA foreign_keys=ON", schema} {
+	for _, q := range []string{"PRAGMA journal_mode=DELETE", schema} {
 		if _, e = db.Exec(q); e != nil {
 			db.Close()
 			return nil, e

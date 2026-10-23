@@ -4,8 +4,11 @@ package diagnostics
 import (
 	"context"
 	"errors"
+	"fmt"
 	"regexp"
 	"strings"
+
+	"modernc.org/sqlite"
 )
 
 // UserError 仅用于源码内固定的操作提示，不得包裹平台原始响应、密钥或用户正文。
@@ -28,6 +31,14 @@ func Error(err error) string {
 	}
 	if errors.Is(err, context.DeadlineExceeded) {
 		return "请求超时"
+	}
+	var sqliteErr *sqlite.Error
+	if errors.As(err, &sqliteErr) {
+		code := sqliteErr.Code()
+		if code&0xff == 5 || code&0xff == 6 {
+			return fmt.Sprintf("本地数据库锁冲突（SQLite code=%d）", code)
+		}
+		return fmt.Sprintf("本地数据库操作失败（SQLite code=%d）", code)
 	}
 	message := err.Error()
 	if strings.Contains(message, "model_not_found") || strings.Contains(message, "模型") && strings.Contains(message, "不存在") {

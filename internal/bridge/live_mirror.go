@@ -322,7 +322,7 @@ func (b *Bridge) syncLiveMessages(ctx context.Context) {
 		failed := 0
 		ambiguous := 0
 		if err != nil {
-			failure = "读取实时同步会话失败"
+			failure = "读取实时同步会话失败：" + diagnostics.Error(err)
 			failed = 1
 		} else {
 			for _, s := range sessions {

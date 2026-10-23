@@ -16,9 +16,9 @@ import (
 
 	"im-agent/internal/channels"
 	"im-agent/internal/config"
+	"im-agent/internal/sqlitedb"
 	"im-agent/internal/store"
 	"im-agent/internal/vault"
-	_ "modernc.org/sqlite"
 )
 
 type Snapshot struct {
@@ -73,7 +73,7 @@ func New(dir string, r *channels.Registry) (*Store, error) {
 	if e != nil {
 		return nil, e
 	}
-	db, e := sql.Open("sqlite", path)
+	db, e := sqlitedb.Open(path, "busy_timeout(3000)", "synchronous(FULL)")
 	if e != nil {
 		return nil, e
 	}
@@ -84,7 +84,7 @@ func New(dir string, r *channels.Registry) (*Store, error) {
 			_ = db.Close()
 		}
 	}()
-	for _, query := range []string{"PRAGMA journal_mode=DELETE", "PRAGMA synchronous=FULL", "PRAGMA busy_timeout=3000", schema} {
+	for _, query := range []string{"PRAGMA journal_mode=DELETE", schema} {
 		if _, e = db.Exec(query); e != nil {
 			return nil, errors.New("初始化桌面数据库失败")
 		}
