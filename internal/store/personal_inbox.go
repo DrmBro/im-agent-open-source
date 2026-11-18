@@ -30,6 +30,15 @@ type PersonalInboxAction struct {
 
 func (s *Store) migratePersonalInbox() error {
 	_, e := s.db.Exec(`CREATE TABLE IF NOT EXISTS personal_inbox(id TEXT PRIMARY KEY,connection_id TEXT NOT NULL,channel TEXT NOT NULL,chat TEXT NOT NULL,user_id TEXT NOT NULL,user_name TEXT NOT NULL,text TEXT NOT NULL,payload TEXT NOT NULL,received_at INTEGER NOT NULL,is_direct INTEGER NOT NULL,mention INTEGER NOT NULL,quoted INTEGER NOT NULL,state TEXT NOT NULL DEFAULT 'new',updated_at INTEGER NOT NULL);CREATE INDEX IF NOT EXISTS personal_inbox_day ON personal_inbox(received_at,state);`)
+	if e != nil {
+		return e
+	}
+	// 修复旧版提前标记处理中但尚未绑定/提交的收件；不恢复任何已执行请求。
+	_, e = s.db.Exec(`UPDATE personal_inbox SET state='new',updated_at=strftime('%s','now')
+WHERE state='processing'
+AND EXISTS (SELECT 1 FROM inbound_messages i JOIN events e ON e.id=i.event_id
+ WHERE i.event_id=personal_inbox.id AND i.thread_id='' AND e.status='done' AND e.stage='received')
+AND NOT EXISTS (SELECT 1 FROM request_results r WHERE r.event_id=personal_inbox.id)`)
 	return e
 }
 func (s *Store) PutPersonalInbox(m im.Message) error {

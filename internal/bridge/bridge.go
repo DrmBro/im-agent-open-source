@@ -308,19 +308,49 @@ func (b *Bridge) CreatePersonalInboxSession(ctx context.Context, id string) erro
 	if a == nil {
 		return errors.New("消息连接不存在")
 	}
-	if e = b.store.MarkPersonalInbox(id, "processing"); e != nil {
-		return e
-	}
-	s, e := b.getOrCreateSession(ctx, a, m)
+	// 串行核对同一收件的创建操作，重复点击不会创建多个线程。
+	b.bindMu.Lock()
+	defer b.bindMu.Unlock()
+	state, e := b.store.PersonalInboxState(id)
 	if e != nil {
 		return e
 	}
-	if e = b.store.QueueInbound(s, m); e != nil {
+	if state != "new" {
+		return errors.New("消息已处理，请刷新个人消息列表")
+	}
+	if !a.Capabilities().PersonalInbox || !b.messageAllowed(a, m) {
+		return errors.New("消息连接或接收权限已失效")
+	}
+	address, e := im.QuestionAddress(m.Address, store.Hash(id))
+	if e != nil {
 		return e
 	}
-	return b.scheduleInbound(store.QueuedInbound{EventID: m.ID, ThreadID: s.ThreadID, AddressKey: store.Hash(s.Address.Key()), Message: m})
+	s, e := b.store.ByChat(address)
+	if errors.Is(e, sql.ErrNoRows) {
+		t, err := b.engineForConnection(m.Address.Connection).StartThread(ctx, b.configForConnection(m.Address.Connection))
+		if err != nil {
+			return err
+		}
+		s = store.Session{ThreadID: t.ID, Address: address, WorkDir: t.Cwd, Owner: m.UserID, GroupName: b.threadName(t, m.Address.Connection), Fresh: true}
+		if e = b.saveSession(s); e != nil {
+			return e
+		}
+	} else if e != nil {
+		return e
+	} else if s.Status != "active" {
+		return errors.New("这条消息的独立会话已关闭，请核对处理记录")
+	}
+	if e = b.store.QueuePersonalInbox(s, m); e != nil {
+		return e
+	}
+	// 已持久排队；容量不足时由既有恢复调度器继续，不让用户重复提交。
+	m.Address = s.Address
+	_ = b.scheduleInbound(store.QueuedInbound{EventID: m.ID, ThreadID: s.ThreadID, AddressKey: store.Hash(s.Address.Key()), Message: m})
+	return nil
 }
 func (b *Bridge) IgnorePersonalInbox(id string) error {
+	b.bindMu.Lock()
+	defer b.bindMu.Unlock()
 	return b.store.MarkPersonalInbox(id, "ignored")
 }
 

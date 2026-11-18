@@ -55,12 +55,22 @@ func (s *Store) ClaimInbound(msg im.Message) (bool, error) {
 }
 
 // 队列状态和最终输入同一事务保存；这一阶段没有调用过 Codex 提交接口。
-func (s *Store) QueueInbound(session Session, msg im.Message) error {return s.queueInbound(session,msg,msg.Address)}
-func(s *Store)QueueRoutedInbound(session Session,msg im.Message)error{
- source:=msg.Address;wire,err:=session.Address.DeliveryAddress();if err!=nil||wire.Key()!=source.Key(){return errors.New("问题路由不能改变消息发送目标")};msg.Address=session.Address
- return s.queueInbound(session,msg,source)
+func (s *Store) QueueInbound(session Session, msg im.Message) error {
+	return s.queueInbound(session, msg, msg.Address, false)
 }
-func(s *Store)queueInbound(session Session,msg im.Message,source im.Address)error{
+func (s *Store) QueueRoutedInbound(session Session, msg im.Message) error {
+	return s.queueRoutedInbound(session, msg, false)
+}
+func (s *Store) queueRoutedInbound(session Session, msg im.Message, personal bool) error {
+	source := msg.Address
+	wire, err := session.Address.DeliveryAddress()
+	if err != nil || wire.Key() != source.Key() {
+		return errors.New("问题路由不能改变消息发送目标")
+	}
+	msg.Address = session.Address
+	return s.queueInbound(session, msg, source, personal)
+}
+func (s *Store) queueInbound(session Session, msg im.Message, source im.Address, personal bool) error {
 	payload, err := json.Marshal(msg)
 	if err != nil {
 		return err
@@ -70,6 +80,31 @@ func(s *Store)queueInbound(session Session,msg im.Message,source im.Address)erro
 		return err
 	}
 	defer tx.Rollback()
+	if personal {
+		result, err := tx.Exec("UPDATE personal_inbox SET state='processing',updated_at=? WHERE id=? AND state='new'", time.Now().Unix(), msg.ID)
+		if err != nil {
+			return err
+		}
+		count, err := result.RowsAffected()
+		if err != nil {
+			return err
+		}
+		if count != 1 {
+			return errors.New("消息已处理，请刷新个人消息列表")
+		}
+		result, err = tx.Exec(`UPDATE events SET status='processing' WHERE id=? AND status='done' AND stage='received'
+AND NOT EXISTS (SELECT 1 FROM request_results WHERE event_id=?)`, msg.ID, msg.ID)
+		if err != nil {
+			return err
+		}
+		count, err = result.RowsAffected()
+		if err != nil {
+			return err
+		}
+		if count != 1 {
+			return errors.New("收件事件状态已变化，未重复提交")
+		}
+	}
 	result, err := tx.Exec(`UPDATE inbound_messages SET thread_id=?,address_key=?,payload=?
 WHERE event_id=? AND address_key=?`, session.ThreadID, Hash(session.Address.Key()), string(payload), msg.ID, Hash(source.Key()))
 	if err != nil {
@@ -302,4 +337,9 @@ WHERE event_id IN (SELECT i.event_id FROM inbound_messages i
 		return 0, err
 	}
 	return result.RowsAffected()
+}
+
+// 人工选择处理与持久排队原子提交；失败时保留待处理状态。
+func (s *Store) QueuePersonalInbox(session Session, msg im.Message) error {
+	return s.queueRoutedInbound(session, msg, true)
 }
