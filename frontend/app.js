@@ -1,6 +1,7 @@
 /* 原生 Wails 绑定；无远程脚本、无前端依赖、无凭证 localStorage。 */
 'use strict';
 const $ = id => document.getElementById(id);
+const settingsPages=new Set(['connections','codex','limits','watch']);
 const titles = {overview:'概览','personal-inbox':'个人消息',connections:'IM 连接',codex:'Codex 配置',limits:'运行限制',watch:'会话同步',board:'任务看板',tasks:'任务与附件'};
 let snapshot, draft, descriptors=[], status={}, localInfo=null, pending=new Map(), dirty=false, busy=false;
 let sourceRefreshAt=0, closureRefreshAt=0, presentationRefreshAt=0, eventRefreshAt=0;
@@ -35,25 +36,39 @@ function updateConnectionStatuses(){
 
 function api(){const value=window.go?.desktop?.API;if(!value)throw new Error('此页面需要在 IM Agent 桌面客户端中打开，不能直接用浏览器打开 HTML。');return value;}
 function node(tag,cls,text){const n=document.createElement(tag);if(cls)n.className=cls;if(text!==undefined)n.textContent=text;return n;}
-function note(text,error=false){$('banner').hidden=false;$('banner').textContent=String(text);$('banner').className=error?'error':'';}
+let noteTimer=0;
+// 成功提示数秒后自动收起；错误提示保留到用户关闭或下一条提示。
+function note(text,error=false){
+ const banner=$('banner');clearTimeout(noteTimer);
+ banner.querySelector('.banner-text').textContent=String(text);banner.className=error?'error':'';banner.setAttribute('role',error?'alert':'status');banner.hidden=false;
+ banner.style.animation='none';void banner.offsetWidth;banner.style.animation='';
+ if(!error)noteTimer=setTimeout(()=>{banner.hidden=true;},7000);
+}
+function dismissNote(){clearTimeout(noteTimer);$('banner').hidden=true;}
+$('banner').querySelector('.banner-close').onclick=dismissNote;
+$('banner').addEventListener('mouseenter',()=>clearTimeout(noteTimer));
 function modified(){dirty=true;api().SetDirty(true).catch(()=>{});updateHeader();}
 function updateHeader(){
- $('dirty-badge').textContent=dirty?'有未保存修改':'已保存';$('dirty-badge').className='badge'+(dirty?' unsaved':'');
+ $('dirty-badge').textContent=dirty?'有未保存修改':'已保存';document.title=(dirty?'• ':'')+'IM Agent';$('dirty-badge').className='badge'+(dirty?' unsaved':'');
  $('save').disabled=busy||!draft||!dirty;$('reload').disabled=busy;$('import').disabled=busy;
  $('add-connection').disabled=busy||!draft;
  updateStatus();
 }
-async function task(fn){if(busy)return;busy=true;document.body.classList.add('working');$('busy').hidden=false;updateHeader();
- try{await fn();}catch(e){note(String(e?.message||e),true);}finally{busy=false;document.body.classList.remove('working');$('busy').hidden=true;updateHeader();}
+let busyTimer=0;
+// 短操作只显示顶栏进度条；超过 400ms 才弹出“正在处理”，避免闪烁。
+async function task(fn){if(busy)return;busy=true;document.body.classList.add('working');busyTimer=setTimeout(()=>{$('busy').hidden=false;},400);updateHeader();
+ try{await fn();}catch(e){note(String(e?.message||e),true);}finally{busy=false;clearTimeout(busyTimer);document.body.classList.remove('working');$('busy').hidden=true;updateHeader();}
 }
-function confirmAction(title,message){return new Promise(resolve=>{
- $('confirm-title').textContent=title;$('confirm-message').textContent=message;
- const d=$('confirm-dialog');let finished=false;
- const done=value=>{if(finished)return;finished=true;d.close();d.removeEventListener('cancel',cancel);resolve(value);};
+// danger=true 时以红色突出确认按钮，并默认聚焦“取消”，防止回车误触。
+function confirmAction(title,message,{danger=false,confirmText='确认'}={}){return new Promise(resolve=>{
+ $('confirm-title').textContent=title;$('confirm-message').textContent=message;$('confirm-yes').textContent=confirmText;
+ const d=$('confirm-dialog');let finished=false;d.classList.toggle('danger',danger);
+ const done=value=>{if(finished)return;finished=true;d.close();d.removeEventListener('cancel',cancel);d.removeEventListener('click',outside);resolve(value);};
  const cancel=e=>{e.preventDefault();done(false);};d.addEventListener('cancel',cancel);
- $('confirm-no').onclick=()=>done(false);$('confirm-yes').onclick=()=>done(true);d.showModal();
+ const outside=e=>{if(e.target===d){const r=d.getBoundingClientRect();if(e.clientX<r.left||e.clientX>r.right||e.clientY<r.top||e.clientY>r.bottom)done(false);}};d.addEventListener('click',outside);
+ $('confirm-no').onclick=()=>done(false);$('confirm-yes').onclick=()=>done(true);d.showModal();(danger?$('confirm-no'):$('confirm-yes')).focus();
  });}
-function navigate(p){if(p!=='board')window.taskBoard?.leave();if(p!=='personal-inbox')window.personalInbox?.leave();if(p!=='tasks'){historyPage('drafts').generation++;clearTaskDelivery();if($('desktop-draft-list')){$('desktop-draft-list').replaceChildren();desktopDraftSignature='';}}page=p;Object.keys(titles).forEach(key=>$('page-'+key).hidden=key!==p);document.querySelectorAll('.nav').forEach(n=>n.classList.toggle('active',n.dataset.page===p));$('breadcrumb').textContent=titles[p];if(p==='board')window.taskBoard?.enter();if(p==='personal-inbox')window.personalInbox?.enter();if(p==='tasks')task(refreshTaskCenter);if(p==='overview')refreshBackground().catch(()=>{});}
+function navigate(p){if(p!=='board')window.taskBoard?.leave();if(p!=='personal-inbox')window.personalInbox?.leave();if(p!=='tasks'){historyPage('drafts').generation++;clearTaskDelivery();if($('desktop-draft-list')){$('desktop-draft-list').replaceChildren();desktopDraftSignature='';}}const changed=page!==p;page=p;Object.keys(titles).forEach(key=>$('page-'+key).hidden=key!==p);document.querySelectorAll('.nav').forEach(n=>{const on=n.dataset.page===p;n.classList.toggle('active',on);if(on)n.setAttribute('aria-current','page');else n.removeAttribute('aria-current');});$('breadcrumb').textContent=titles[p];$('breadcrumb').previousSibling.textContent=(settingsPages.has(p)?'设置':'工作台')+' / ';if(changed)$('main').scrollTop=0;if(p==='board')window.taskBoard?.enter();if(p==='personal-inbox')window.personalInbox?.enter();if(p==='tasks')task(refreshTaskCenter);if(p==='overview')refreshBackground().catch(()=>{});}
 function bindValue(parent,label,value,set,{help='',type='text',options=null,pick=null,disabled=false}={}){
  const field=node('div','field'),lab=node('label','',label);const input=node(options?'select':type==='textarea'?'textarea':'input');
  const id='field-'+crypto.randomUUID();input.id=id;lab.htmlFor=id;field.append(lab);
@@ -79,7 +94,7 @@ function updateStatus(){
  const reportSend=$('task-delivery-send');if(reportSend)reportSend.disabled=busy||status.phase!=='running';
  const names={stopped:'已停止',starting:'启动中',running:'运行中',stopping:'停止中',failed:'启动或运行失败'};
  const phase=status.phase||'stopped';$('status-title').textContent=names[phase]||phase;
- $('status-dot').className='dot '+phase;
+ $('status-dot').className='dot '+phase;$('hero').dataset.phase=phase;
  $('status-heading').textContent=phase==='running'?'你的桥接进程正在运行':phase==='starting'?'正在准备桥接连接':phase==='stopping'?'正在安全停止':phase==='failed'?'需要检查连接配置':'由你决定何时开始';
  $('status-message').textContent=status.message||'客户端不会自动启动桥接。';
  $('policy-notice').hidden=!status.policy_notice;$('policy-notice').textContent=status.policy_notice||'';
@@ -125,7 +140,7 @@ function renderConnections(){
  const list=$('connection-list');list.replaceChildren();
  if(!draft.connections.length){const empty=node('div','panel empty');empty.append(node('div','symbol','▧'),node('h2','','添加第一个 IM 连接'),node('p','','凭证仅保存在本机，只有白名单用户可以使用机器人。'));const b=node('button','btn primary','＋ 添加连接');b.onclick=addConnection;empty.append(b);list.append(empty);return;}
  draft.connections.forEach(c=>{
-  const d=connectionDescriptor(c);const shell=node('details','panel connection connection-fold'),panel=node('div','connection-fields'),head=node('summary','connection-header'),intro=node('div');shell.open=connectionExpansion.has(c.id)?connectionExpansion.get(c.id):!savedIDs.has(c.id);shell.ontoggle=()=>connectionExpansion.set(c.id,shell.open);intro.append(node('h3','',d?.name||c.type),node('p','',c.id||'新连接'));const remove=node('button','btn danger small','删除连接');remove.onclick=()=>task(async()=>{if(!await confirmAction('删除连接？','保存后会删除该连接的本地加密凭证；业务历史保留。正在运行的连接不会立即停止。'))return;draft.connections=draft.connections.filter(x=>x!==c);if(draft.watch.connection_id===c.id){draft.watch.enabled=false;draft.watch.connection_id='';}for(const [k,v] of pending){if(v.connection_id===c.id)pending.delete(k);}modified();renderConnections();renderWatch();});const health=node('span','badge connection-live-status');health.dataset.connection=c.id;head.append(intro,health,node('span','muted','展开 / 收起'));shell.append(head,panel);panel.append(remove);
+  const d=connectionDescriptor(c);const shell=node('details','panel connection connection-fold'),panel=node('div','connection-fields'),head=node('summary','connection-header'),intro=node('div');shell.open=connectionExpansion.has(c.id)?connectionExpansion.get(c.id):!savedIDs.has(c.id);shell.ontoggle=()=>connectionExpansion.set(c.id,shell.open);intro.append(node('h3','',d?.name||c.type),node('p','',c.id||'新连接'));const remove=node('button','btn danger small','删除连接');remove.type='button';remove.onclick=()=>task(async()=>{if(!await confirmAction('删除连接？','保存后会删除该连接的本地加密凭证；业务历史保留。正在运行的连接不会立即停止。',{danger:true,confirmText:'删除'}))return;draft.connections=draft.connections.filter(x=>x!==c);if(draft.watch.connection_id===c.id){draft.watch.enabled=false;draft.watch.connection_id='';}for(const [k,v] of pending){if(v.connection_id===c.id)pending.delete(k);}modified();renderConnections();renderWatch();});const health=node('span','badge connection-live-status');health.dataset.connection=c.id;head.append(intro,health,node('span','muted','展开 / 收起'));shell.append(head,panel);panel.append(remove);
   const basic=node('div','two-cols');
   bindValue(basic,'连接 ID',c.id,value=>{const old=c.id;connectionExpansion.set(value,shell.open);if(old!==value)connectionExpansion.delete(old);c.id=value;health.dataset.connection=value;for(const [k,v] of [...pending]){if(v.connection_id===old){pending.delete(k);v.connection_id=value;pending.set(value+'\0'+v.field,v);}}head.querySelector('p').textContent=value;renderWatch();},{disabled:savedIDs.has(c.id),help:'唯一标识；保存后不可直接改名，避免凭证与会话关联错位。'});
   bindValue(basic,'渠道',c.type,value=>{c.type=value;if(value!=='dingtalk_personal'){c.personal_auto_reply_users=[];c.personal_all_direct=false;c.personal_mentions=false;c.personal_group_followup=false;c.personal_followup_minutes=0;}if(value==='dingtalk'||value==='dingtalk_personal'){c.auto_create_chat=false;c.shared_chat_id='';}if(!descriptors.find(x=>x.type===value)?.supports_topics)c.conversation_mode='group';for(const [k,v] of pending){if(v.connection_id===c.id)pending.delete(k);}renderConnections();},{disabled:savedIDs.has(c.id),options:descriptors.map(x=>[x.type,x.name])});panel.append(basic);
@@ -203,7 +218,7 @@ $('save').onclick=()=>task(async()=>{
  const result=await api().Save({config:draft,revision:snapshot.revision,secrets:[...pending.values()]});
  applySnapshot(result);await refreshCodex();note('配置已保存到 SQLite。凭证输入已清空；已有桥接进程继续使用旧配置，需要停止后重新启动。');
 });
-$('reload').onclick=()=>task(async()=>{if(dirty&&!await confirmAction('丢弃未保存修改？','重新加载会清空当前表单修改和未保存的密钥输入。'))return;await load();note('已重新加载本地保存的配置。');});
+$('reload').onclick=()=>task(async()=>{if(dirty&&!await confirmAction('丢弃未保存修改？','重新加载会清空当前表单修改和未保存的密钥输入。',{danger:true,confirmText:'丢弃并重新加载'}))return;await load();note('已重新加载本地保存的配置。');});
 $('import').onclick=()=>task(async()=>{
  if(dirty&&!await confirmAction('替换当前草稿？','尚未保存的表单与密钥输入将丢弃；数据库暂不更改。'))return;
  const imported=await api().ImportJSON();if(!imported)return;
@@ -211,10 +226,19 @@ $('import').onclick=()=>task(async()=>{
  draft=structuredClone(imported.config);pending.clear();modified();render();navigate('connections');invalidateLocal();note('已导入草稿，尚未写入数据库。旧版飞书环境变量字段已忽略；请在客户端填写凭证后保存。');
 });
 $('start').onclick=()=>task(async()=>{if(dirty)throw new Error('请先保存配置，避免启动旧版本。');await api().StartService();status=await api().GetStatus();updateStatus();note('已提交启动请求，请查看状态。模型或飞书是否可用仍需实际消息确认。');});
-$('stop').onclick=()=>task(async()=>{if(!await confirmAction('停止桥接？','这会停止本地接收、同步、等待和未完成审批，不会删除会话数据。已提交到桌面的任务可能仍在排队或执行，请在桌面确认，不要直接重发。'))return;await api().StopService();status=await api().GetStatus();updateStatus();});
+$('stop').onclick=()=>task(async()=>{if(!await confirmAction('停止桥接？','这会停止本地接收、同步、等待和未完成审批，不会删除会话数据。已提交到桌面的任务可能仍在排队或执行，请在桌面确认，不要直接重发。',{danger:true,confirmText:'停止'}))return;await api().StopService();status=await api().GetStatus();updateStatus();});
 $('add-connection').onclick=addConnection;
 document.querySelectorAll('[data-page]').forEach(b=>b.onclick=()=>navigate(b.dataset.page));
 document.querySelectorAll('[data-go]').forEach(b=>b.onclick=()=>navigate(b.dataset.go));
+// 键盘快捷键：⌘/Ctrl+1…8 切换页面，⌘/Ctrl+S 保存，Esc 关闭提示条。
+const pageOrder=[...document.querySelectorAll('.nav[data-page]')].map(b=>b.dataset.page);
+document.addEventListener('keydown',e=>{
+ if($('confirm-dialog').open)return;
+ const mod=e.metaKey||e.ctrlKey;
+ if(mod&&!e.shiftKey&&!e.altKey&&/^[1-9]$/.test(e.key)){const target=pageOrder[Number(e.key)-1];if(target){e.preventDefault();if(!busy)navigate(target);}return;}
+ if(mod&&e.key.toLowerCase()==='s'){e.preventDefault();if(!$('save').disabled)$('save').click();return;}
+ if(e.key==='Escape'&&!$('banner').hidden){dismissNote();}
+});
 // 禁止页面导航和拖入文件，防止远程页面进入具有本机绑定的 WebView。
 document.addEventListener('click',e=>{if(e.target.closest('a'))e.preventDefault();});
 window.addEventListener('dragover',e=>e.preventDefault());window.addEventListener('drop',e=>e.preventDefault());

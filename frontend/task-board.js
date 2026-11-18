@@ -81,7 +81,7 @@
     const text=field.value;
     if(kind==='send'&&!text.trim())throw new Error('请填写回复正文');
     const descriptions={send:`将以你的钉钉个人身份回复到 ${targetLabel}，保留 AI 标记。\n\n${text.slice(0,600)}${text.length>600?'…':''}`,manual:'仅记录你已自行处理，IM Agent 不会发送这条回复。',ignored:'保留审核记录，不向联系人发送。'};
-    if(kind!=='save'&&!await confirmAction(label+'？',descriptions[kind]))return;
+    if(kind!=='save'&&!await confirmAction(label+'？',descriptions[kind],{danger:kind==='ignored',confirmText:label}))return;
     try{await api().ReviewPersonalReply({event_id:r.event_id,version:r.version,action:kind,text},true);}catch(error){feedback.textContent='操作失败：'+errorText(error);feedback.className='notice warning';throw error;}
     note(kind==='send'?'已批准，后台将按投递账本发送；请核对最终状态。':'审核记录已更新。');await refresh(true);await openDetail(item);
    });box.append(button);
@@ -99,7 +99,20 @@
  }
 
  function applyFilters(){query.source=el('board-source').value;query.search=el('board-search').value.trim();query.page=1;refresh(true);}
- el('board-filters').onsubmit=e=>{e.preventDefault();applyFilters();};el('board-source').onchange=applyFilters;
+ el('board-filters').onsubmit=e=>{e.preventDefault();clearTimeout(searchTimer);applyFilters();};
+ // 输入停顿后自动搜索，无需点击“搜索”。
+ let searchTimer=0;el('board-search').addEventListener('input',()=>{clearTimeout(searchTimer);searchTimer=setTimeout(()=>{if(el('board-search').value.trim()!==query.search)applyFilters();},350);});
+ // 列表内 ↑/↓ 切换并打开任务；按 / 聚焦搜索框。
+ el('board-list').addEventListener('keydown',e=>{
+  if(e.key!=='ArrowDown'&&e.key!=='ArrowUp')return;
+  const rows=[...el('board-list').querySelectorAll('.board-task')],index=rows.indexOf(document.activeElement);if(index<0)return;
+  const next=rows[index+(e.key==='ArrowDown'?1:-1)];if(!next)return;e.preventDefault();next.focus();next.click();
+ });
+ document.addEventListener('keydown',e=>{
+  if(!current()||e.key!=='/'||e.metaKey||e.ctrlKey||e.altKey)return;
+  const t=e.target;if(t.closest?.('input,textarea,select,[contenteditable],dialog'))return;
+  e.preventDefault();el('board-search').focus();el('board-search').select();
+ });el('board-source').onchange=applyFilters;
  el('board-reset').onclick=()=>{query.source='';query.state='';query.search='';query.page=1;el('board-search').value='';el('board-source').value='';refresh(true);};el('board-size').onchange=()=>{query.page_size=Number(el('board-size').value);query.page=1;refresh(true);};el('board-prev').onclick=()=>{query.page=Math.max(1,query.page-1);refresh(true);};el('board-next').onclick=()=>{query.page++;refresh(true);};el('board-refresh').onclick=()=>refresh(true);
  window.taskBoard={enter:()=>{signature='';refresh(true);},leave,poll:async()=>{if(Date.now()-refreshAt>5000)await refresh();}};
 })();
