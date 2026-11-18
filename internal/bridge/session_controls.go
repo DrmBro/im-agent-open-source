@@ -44,7 +44,7 @@ func (b *Bridge) controlSession(in im.Interaction, event string) (store.Session,
 		return s, diagnostics.UserError("卡片与会话不匹配或已失效，请刷新状态")
 	}
 	if in.Choice != "refresh" && in.Choice != "report" && in.UserID != s.Owner && !config.Contains(b.conn(s.Address.Connection).AdminUsers, in.UserID) {
-		return s, diagnostics.UserError("只有会话创建者或管理员可以切换模型和中断")
+		return s, diagnostics.UserError("只有会话创建者或管理员可以操作会话和投递消息")
 	}
 	return s, nil
 }
@@ -59,11 +59,11 @@ func (b *Bridge) receiveSessionControl(ctx context.Context, in im.Interaction) e
 	form := strings.HasPrefix(in.ActionID, "session-form:")
 	if form {
 		c, err = b.store.SessionControl(strings.TrimPrefix(in.ActionID, "session-form:"))
-		if err != nil || c.Kind != "model" || c.State != "open" || (c.ExpiresAt != 0 && c.ExpiresAt <= time.Now().Unix()) {
-			return diagnostics.UserError("模型表单已处理或失效，请重新打开")
+		if err != nil || (c.Kind != "model" && c.Kind != "forward") || c.State != "open" || (c.ExpiresAt != 0 && c.ExpiresAt <= time.Now().Unix()) {
+			return diagnostics.UserError("操作表单已处理或失效，请重新打开")
 		}
 		event = c.EventID
-	} else if in.Choice != "model" && in.Choice != "interrupt" && in.Choice != "refresh" && in.Choice != "report" {
+	} else if in.Choice != "model" && in.Choice != "interrupt" && in.Choice != "refresh" && in.Choice != "report" && in.Choice != "forward" {
 		return diagnostics.UserError("不支持的会话操作")
 	}
 	s, err := b.controlSession(in, event)
@@ -78,7 +78,7 @@ func (b *Bridge) receiveSessionControl(ctx context.Context, in im.Interaction) e
 		in.Address = s.Address
 		return b.receiveTaskReport(ctx, in)
 	}
-	if form && in.Choice != "create" && in.Choice != "cancel" {
+	if form && in.Choice != "create" && in.Choice != "cancel" && !(c.Kind == "forward" && (in.Choice == "refresh_groups" || in.Choice == "browse" || in.Choice == "back" || in.Choice == "next" || in.Choice == "previous")) {
 		return diagnostics.UserError("不支持的表单操作")
 	}
 	if b.controlJobs == nil {
@@ -94,21 +94,36 @@ func (b *Bridge) receiveSessionControl(ctx context.Context, in im.Interaction) e
 		lock := b.controlLock(s.ThreadID)
 		lock.Lock()
 		defer lock.Unlock()
-		work, cancel := context.WithTimeout(parent, 25*time.Second)
+		work, cancel := context.WithTimeout(parent, 90*time.Second)
 		defer cancel()
 		current, checkErr := b.controlSession(in, event)
 		if checkErr != nil || work.Err() != nil {
 			return
 		}
 		var operationErr error
+		if form && c.Kind == "forward" {
+			fresh, err := b.store.SessionControl(c.ID)
+			if err != nil || fresh.State != "open" || fresh.Payload != c.Payload {
+				return
+			}
+			c = fresh
+		}
 		if form {
 			if in.Choice == "cancel" {
 				operationErr = b.store.FinishSessionControl(c.ID, "cancelled", "")
+			} else if c.Kind == "forward" {
+				if in.Choice == "create" {
+					operationErr = b.sendForwardForm(work, c, in.Fields)
+				} else {
+					operationErr = b.navigateForwardForm(work, c, in.Choice, in.Fields)
+				}
 			} else {
 				operationErr = b.saveModelForm(current, c, in.Fields)
 			}
 		} else {
 			switch in.Choice {
+			case "forward":
+				operationErr = b.openForwardControl(work, current, event, in.MessageID)
 			case "model":
 				operationErr = b.openModelControl(work, current, event, in.MessageID)
 			case "interrupt":
@@ -119,6 +134,10 @@ func (b *Bridge) receiveSessionControl(ctx context.Context, in im.Interaction) e
 		if operationErr != nil {
 			// 错误保留在原卡片；不依赖一次性文本提醒是否送达。
 			_ = b.store.SetMeta("session-control-notice:"+store.Hash(current.ThreadID+"\x00"+event), b.presentationFilter().Text(diagnostics.Error(operationErr)))
+		} else if form && c.Kind == "forward" && in.Choice != "cancel" {
+			if finished, err := b.store.SessionControl(c.ID); err == nil {
+				_ = b.store.SetMeta("session-control-notice:"+store.Hash(current.ThreadID+"\x00"+event), finished.Detail)
+			}
 		} else if in.Choice != "refresh" {
 			_ = b.store.SetMeta("session-control-notice:"+store.Hash(current.ThreadID+"\x00"+event), "")
 		}
@@ -137,7 +156,7 @@ func (b *Bridge) openModelControl(ctx context.Context, s store.Session, event, m
 	} else if !errors.Is(err, sql.ErrNoRows) {
 		return err
 	}
-	models, err := b.codex.Models(ctx)
+	models, err := b.engineForThread(s.ThreadID).Models(ctx)
 	if err != nil {
 		return diagnostics.UserError("暂时无法读取可用模型，未更改设置")
 	}
@@ -239,7 +258,7 @@ func (b *Bridge) interruptCardTurn(ctx context.Context, s store.Session, event, 
 		return diagnostics.UserError("本轮已结束或身份尚未确认，请刷新状态")
 	}
 	// 先核对真实轮次，再持久领取；未知结果只回读，不再发送一次中断。
-	turn, err := b.codex.ReadControlTurn(ctx, s.ThreadID, snapshot.TurnID)
+	turn, err := b.engineForThread(s.ThreadID).ReadControlTurn(ctx, s.ThreadID, snapshot.TurnID)
 	if err != nil {
 		return err
 	}
@@ -259,7 +278,7 @@ func (b *Bridge) interruptCardTurn(ctx context.Context, s store.Session, event, 
 		return diagnostics.UserError("本轮已有中断请求，请刷新核对；不会重复发送")
 	}
 	_ = b.enqueueSessionStatus(s.ThreadID, true, event)
-	ended, err := b.codex.InterruptExactTurn(ctx, s.ThreadID, snapshot.TurnID)
+	ended, err := b.engineForThread(s.ThreadID).InterruptExactTurn(ctx, s.ThreadID, snapshot.TurnID)
 	state, detail := "requested", "中断请求已发送，等待确认轮次结束"
 	if err != nil {
 		state, detail = "unknown", "中断结果未确认，请刷新核对，未自动重发"
@@ -275,6 +294,9 @@ func (b *Bridge) interruptCardTurn(ctx context.Context, s store.Session, event, 
 // 原卡上保留报告入口；控制按钮和表单均绑定同一平台回执。
 func (b *Bridge) addSessionControls(view store.SessionStatus, card *im.Card) {
 	s, event := view.Session, view.Task.ID
+	if event != "" {
+		card.Text = "原飞书请求的历史状态（与钉钉投递分开记录）：\n" + card.Text
+	}
 	card.ActionID = "session:" + event
 	if pref, err := b.store.SessionModel(s); err == nil && pref.Model != "" {
 		card.Text += "\n下一轮模型：" + pref.Model + " · " + pref.Effort + "（已保存）"
@@ -293,7 +315,11 @@ func (b *Bridge) addSessionControls(view store.SessionStatus, card *im.Card) {
 		ended := p.EndedAt > 0 || p.Outcome != "" || view.Task.Status == "done" || view.Task.Status == "failed" || view.Result != nil && (view.Result.Execution == "completed" || view.Result.Execution == "failed")
 		if !ended {
 			if p.Preview != "" && p.Issue != "identity_conflict" {
-				card.Text += fmt.Sprintf("\n\n临时输出 · 尚未完成（%s）\n%s", telemetryTime(p.PreviewAt), p.Preview)
+				label := "临时输出 · 尚未完成"
+				if p.PreviewScope == "session" {
+					label = "会话公开输出 · 轮次标识未匹配，尚未确认完成"
+				}
+				card.Text += fmt.Sprintf("\n\n%s（%s）\n%s", label, telemetryTime(p.PreviewAt), p.Preview)
 			} else {
 				card.Text += "\n\n临时输出：等待可关联的公开文字。"
 			}
@@ -310,11 +336,14 @@ func (b *Bridge) addSessionControls(view store.SessionStatus, card *im.Card) {
 			}
 		}
 	}
-	card.Buttons = append(card.Buttons, im.Button{Label: "切换模型", Value: "model"}, im.Button{Label: "刷新状态", Value: "refresh"})
+	card.Buttons = append(card.Buttons, im.Button{Label: "切换模型", Value: "model"}, im.Button{Label: "刷新状态", Value: "refresh"}, im.Button{Label: "投递最新回复到钉钉群", Value: "forward"})
+	if form, err := b.store.OpenSessionControl(s.ThreadID, event, "forward"); err == nil {
+		_ = forwardFormCard(form, card)
+	} else if form, err := b.store.OpenModelControl(s.ThreadID, event); err == nil {
+		_ = modelFormCard(form, card)
+	}
 	if note, err := b.store.GetMeta("session-control-notice:" + store.Hash(s.ThreadID+"\x00"+event)); err == nil && note != "" {
 		card.Text += "\n操作提示：" + note
 	}
-	if form, err := b.store.OpenModelControl(s.ThreadID, event); err == nil {
-		_ = modelFormCard(form, card)
-	}
+
 }

@@ -10,6 +10,7 @@ import (
 )
 
 type TaskRow struct {
+	StateLabel  string         `json:"state_label"`
 	Result      *RequestResult `json:"result,omitempty"`
 	ID          string         `json:"id"`
 	ThreadID    string         `json:"thread_id"`
@@ -171,6 +172,7 @@ func TaskCenterSnapshot(dir string) (TaskCenter, error) {
 		r.ThreadID = sessions[key].ThreadID
 		r.Name = names[r.ThreadID]
 		r.WaitingHint = RequestWaitingHint(r)
+		r.StateLabel = RequestStateLabel(r)
 		out.Tasks = append(out.Tasks, r)
 	}
 	e = rows.Err()
@@ -185,6 +187,7 @@ func TaskCenterSnapshot(dir string) (TaskCenter, error) {
 	if hasResults != 0 {
 		for i := range out.Tasks {
 			out.Tasks[i].Result, e = requestResultSnapshot(db, out.Tasks[i].ID)
+			out.Tasks[i].StateLabel = RequestStateLabel(out.Tasks[i])
 			if e != nil {
 				return out, e
 			}

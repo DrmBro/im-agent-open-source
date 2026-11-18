@@ -56,31 +56,15 @@ type Client struct {
 	pendingReads     map[string]bool
 	rolloutHistories sync.Map
 	freshThreads     sync.Map
-	transport        *localTransport
 	runtimeConfig    config.Config
-	nativeMu         sync.Mutex
-	nativeTurns      map[string]*nativeSubmission
+	desktopTurnsMu   sync.Mutex
 	desktopTurns     map[string]context.CancelFunc
 }
 
 func Start(parent context.Context, c config.Config) (*Client, error) {
 	ctx, cancel := context.WithCancel(parent)
-	nativeMode := false
-	var transport *localTransport
-	if nativeMode {
-		var e error
-		transport, e = prepareTransport()
-		if e != nil {
-			cancel()
-			return nil, e
-		}
-	}
-	args := []string{"app-server", "-c", "approval_policy=" + strconv.Quote(c.Codex.ApprovalPolicy), "-c", "sandbox_mode=" + strconv.Quote(c.Codex.Sandbox)}
-	if nativeMode {
-		args = append(args, "--listen", "ws://127.0.0.1:0", "--ws-auth", "capability-token", "--ws-token-sha256", transport.tokenDigest, "--enable", "default_mode_request_user_input")
-	} else {
-		args = append(args, "--stdio")
-	}
+	// 辅助 App Server 固定使用 stdio；桌面会话提交通过已核验的桌面协议入口。
+	args := []string{"app-server", "-c", "approval_policy=" + strconv.Quote(c.Codex.ApprovalPolicy), "-c", "sandbox_mode=" + strconv.Quote(c.Codex.Sandbox), "--stdio"}
 	cmd := exec.CommandContext(ctx, c.Codex.Binary, args...)
 	cmd.WaitDelay = 3 * time.Second
 	hostDir, e := HostDirectory(c.StateDir)
@@ -98,7 +82,7 @@ func Start(parent context.Context, c config.Config) (*Client, error) {
 
 	for _, entry := range append([]string(nil), env...) {
 		name, _, _ := strings.Cut(entry, "=")
-		if strings.HasPrefix(name, "FEISHU_") || strings.HasPrefix(name, "LARK_") || strings.HasPrefix(name, "IM_AGENT_FEISHU_") {
+		if strings.HasPrefix(name, "FEISHU_") || strings.HasPrefix(name, "LARK_") || strings.HasPrefix(name, "IM_AGENT_FEISHU_") || strings.HasPrefix(name, "DINGTALK_") || strings.HasPrefix(name, "IM_AGENT_DINGTALK_") || strings.HasPrefix(name, "DWS_") {
 			env = removeEnv(env, name)
 		}
 	}
@@ -117,42 +101,22 @@ func Start(parent context.Context, c config.Config) (*Client, error) {
 		env = setEnv(env, "PATH", filepath.Dir(c.Codex.Binary)+string(os.PathListSeparator)+os.Getenv("PATH"))
 	}
 	cmd.Env = env
-	var in io.WriteCloser
-	var out io.Reader
-	if !nativeMode {
-		in, e = cmd.StdinPipe()
-		if e != nil {
-			cancel()
-			return nil, e
-		}
-		out, e = cmd.StdoutPipe()
-		if e != nil {
-			cancel()
-			return nil, e
-		}
-	} else {
-		cmd.Stdout = transport
+	in, e := cmd.StdinPipe()
+	if e != nil {
+		cancel()
+		return nil, e
+	}
+	out, e := cmd.StdoutPipe()
+	if e != nil {
+		cancel()
+		return nil, e
 	}
 	cmd.Stderr = io.Discard
-	if nativeMode {
-		cmd.Stderr = transport
-	}
 	if e = cmd.Start(); e != nil {
 		cancel()
 		return nil, e
 	}
-	if nativeMode {
-		handshake, stop := context.WithTimeout(ctx, 20*time.Second)
-		stream, dialErr := transport.wait(handshake)
-		stop()
-		if dialErr != nil {
-			cancel()
-			_ = cmd.Wait()
-			return nil, dialErr
-		}
-		in, out = stream, stream
-	}
-	client := &Client{transport: transport, runtimeConfig: c, nativeTurns: map[string]*nativeSubmission{}, desktopTurns: map[string]context.CancelFunc{}, cmd: cmd, in: in, ctx: ctx, cancel: cancel, done: make(chan struct{}), pending: map[string]chan Frame{}, pendingReads: map[string]bool{}, subs: map[string]chan Notice{}, requests: make(chan struct{}, 32), archived: make(chan string, 128)}
+	client := &Client{runtimeConfig: c, desktopTurns: map[string]context.CancelFunc{}, cmd: cmd, in: in, ctx: ctx, cancel: cancel, done: make(chan struct{}), pending: map[string]chan Frame{}, pendingReads: map[string]bool{}, subs: map[string]chan Notice{}, requests: make(chan struct{}, 32), archived: make(chan string, 128)}
 	go client.read(out)
 	initCtx, stop := context.WithTimeout(ctx, 20*time.Second)
 	defer stop()
@@ -230,9 +194,6 @@ func (c *Client) Subscribe(thread string) (<-chan Notice, func(), error) {
 		c.subMu.Lock()
 		delete(c.subs, thread)
 		c.subMu.Unlock()
-		c.nativeMu.Lock()
-		delete(c.nativeTurns, thread)
-		c.nativeMu.Unlock()
 	}, nil
 }
 func (c *Client) read(out io.Reader) {
@@ -301,9 +262,6 @@ func (c *Client) read(out io.Reader) {
 				default: /* 归档列表轮询补偿 */
 				}
 			}
-			if !c.observeNativeNotice(p.ThreadID, f) {
-				continue
-			}
 			c.subMu.Lock()
 			ch := c.subs[p.ThreadID]
 			if ch != nil {
@@ -326,7 +284,7 @@ func (c *Client) respond(f Frame) {
 	c.handlerMu.RUnlock()
 	var result any
 	var e error
-	if h == nil || !c.allowNativeRequest(f) {
+	if h == nil {
 		e = errors.New("handler unavailable for this turn")
 	} else {
 		result, e = h(c.ctx, f.Method, f.Params)

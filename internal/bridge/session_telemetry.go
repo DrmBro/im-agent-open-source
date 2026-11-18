@@ -18,7 +18,7 @@ func (b *Bridge) readCurrentSessionStatus(ctx context.Context, thread string, ov
 		return view, err
 	}
 	readCtx, cancel := context.WithTimeout(ctx, 2*time.Second)
-	snapshot, user, readErr := b.codex.LatestSessionTelemetry(readCtx, thread)
+	snapshot, user, readErr := b.engineForThread(thread).LatestSessionTelemetry(readCtx, thread)
 	cancel()
 	if readErr != nil {
 		// 查询失败不能把历史 IM 的“已回复”当成当前会话状态。

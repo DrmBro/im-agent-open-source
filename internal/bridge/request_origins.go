@@ -40,7 +40,7 @@ func (bridge *Bridge) observeRequestOrigin(parent context.Context, candidate sto
 	}
 	ctx, cancel := context.WithTimeout(parent, 2*time.Second)
 	defer cancel()
-	messages, next, err := bridge.codex.ReadLiveMessages(ctx, candidate.ThreadID, candidate.Path, candidate.Offset)
+	messages, next, err := bridge.engineForThread(candidate.ThreadID).ReadLiveMessages(ctx, candidate.ThreadID, candidate.Path, candidate.Offset)
 	failed := err != nil
 	if failed {
 		next = candidate.Offset

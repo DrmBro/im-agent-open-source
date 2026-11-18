@@ -303,6 +303,7 @@ func scanHistoryPage(rows *sql.Rows, out *HistoryPage) ([]string, error) {
 				return nil, err
 			}
 			r.WaitingHint = RequestWaitingHint(r)
+			r.StateLabel = RequestStateLabel(r)
 			out.Tasks = append(out.Tasks, r)
 			keys = append(keys, key)
 		case "deliveries":
@@ -401,6 +402,7 @@ func completeHistoryTasks(ctx context.Context, tx *sql.Tx, out *HistoryPage, key
 			return err
 		}
 		out.Tasks[i].Result = result
+		out.Tasks[i].StateLabel = RequestStateLabel(out.Tasks[i])
 	}
 	return nil
 }
@@ -435,11 +437,9 @@ WHERE event_id = ?`, event).Scan(&r.EventID, &r.TurnRef, &r.Execution, &r.Delive
 		return nil, err
 	}
 	if tables["request_result_replies"] && tables["live_mirror_parts"] {
-		err = tx.QueryRowContext(ctx, `SELECT coalesce(sum(m.expected_parts), 0),
-       coalesce(sum((SELECT count(*) FROM live_mirror_parts p
-                     WHERE p.thread_id = m.thread_id AND p.item_id = m.item_id AND p.state = 'sent')), 0)
-FROM request_result_replies m
-WHERE m.event_id = ?`, event).Scan(&r.ExpectedParts, &r.ConfirmedParts)
+		var unknown, failed int
+		err = tx.QueryRowContext(ctx, requestReplyDeliverySQL, event).Scan(&r.ExpectedParts, &r.ConfirmedParts, &unknown, &failed)
+		r.Delivery = requestDeliveryState(r.Delivery, unknown, failed)
 		if err != nil {
 			return nil, err
 		}

@@ -6,6 +6,7 @@ import (
 	"time"
 
 	"im-agent/internal/codex"
+	"im-agent/internal/config"
 	"im-agent/internal/diagnostics"
 	"im-agent/internal/store"
 )
@@ -14,7 +15,7 @@ import (
 func (b *Bridge) captureRequestReplies(ctx context.Context, s store.Session, event, turn string, replies []codex.HistoryMessage) error {
 	entries := make([]store.MirrorEntry, 0, len(replies))
 	for _, reply := range replies {
-		entries = append(entries, b.mirrorEntry(reply, 0, b.markdownEnabled(s)))
+		entries = append(entries, b.mirrorEntry(reply, 0, b.markdownEnabled(s), config.IsPersonalChannel(s.Address.Channel)))
 	}
 	lock := b.liveLock(s.ThreadID)
 	lock.Lock()
@@ -83,7 +84,7 @@ func (b *Bridge) observeRequestRecovery(parent context.Context, p store.RequestP
 	}
 	if state.Outcome == "completed" && len(state.ReplyIDs) == 0 && state.ReplyIssue == "" {
 		recheck, cancel := context.WithTimeout(parent, 3*time.Second)
-		repaired, changed, readErr := b.codex.RecoverUnphasedCompletion(recheck, p.ThreadID, p.Path, p.UserItemID, p.OriginOffset, p.Offset, state)
+		repaired, changed, readErr := b.engineForThread(p.ThreadID).RecoverUnphasedCompletion(recheck, p.ThreadID, p.Path, p.UserItemID, p.OriginOffset, p.Offset, state)
 		cancel()
 		if readErr == nil && changed {
 			if raw, err := json.Marshal(repaired); err == nil {
@@ -96,7 +97,7 @@ func (b *Bridge) observeRequestRecovery(parent context.Context, p store.RequestP
 		}
 	}
 	ctx, stop := context.WithTimeout(parent, 3*time.Second)
-	updated, next, e := b.codex.ReadRecoveryObservation(ctx, p.ThreadID, p.Path, p.Offset, p.UserItemID, state)
+	updated, next, e := b.engineForThread(p.ThreadID).ReadRecoveryObservation(ctx, p.ThreadID, p.Path, p.Offset, p.UserItemID, state)
 	stop()
 	if e != nil {
 		_, _ = b.store.SaveRequestProbe(p, p.Offset, p.State, diagnostics.Error(e))
@@ -135,14 +136,14 @@ func (b *Bridge) observeRequestRecovery(parent context.Context, p store.RequestP
 		var entries []store.MirrorEntry
 		if len(updated.ReplyLocations) == len(updated.ReplyIDs) && len(updated.ReplyIDs) > 0 {
 			readCtx, cancel := context.WithTimeout(parent, 3*time.Second)
-			replies, readErr := b.codex.ReadObservedReplies(readCtx, p.ThreadID, p.Path, updated.ReplyLocations)
+			replies, readErr := b.engineForThread(p.ThreadID).ReadObservedReplies(readCtx, p.ThreadID, p.Path, updated.ReplyLocations)
 			cancel()
 			if readErr != nil {
 				_, _ = b.store.SaveRequestProbe(p, p.Offset, p.State, "原回复位置或正文指纹未通过复核，未使用替代消息；稍后再核对")
 				return
 			}
 			for index, reply := range replies {
-				entries = append(entries, b.mirrorEntry(reply, 0, b.markdownEnabled(s)))
+				entries = append(entries, b.mirrorEntry(reply, 0, b.markdownEnabled(s), config.IsPersonalChannel(s.Address.Channel)))
 				location := updated.ReplyLocations[index]
 				if location.TurnID != "" {
 					_ = b.store.RecoverReplyPreview(p, updated.MatchedTurn, reply.ID, reply.Text, b.presentationFilter().Text(reply.Text), location.Timestamp)

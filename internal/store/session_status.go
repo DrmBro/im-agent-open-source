@@ -104,7 +104,7 @@ func (s *Store) StatusCardsEnabledAt() (int64, error) {
 }
 
 // events.id是主键，chat_key是既有绑定地址散列。只读取模型请求的已知阶段，命令不覆盖任务。
-const statusRequestStages = "('queued','starting','resuming','downloading_attachment','submitting','waiting_desktop_submit','checking_desktop','preserving_draft','restoring_draft','waiting_draft','waiting_desktop','switching_desktop','waiting_model','completed','outcome_unconfirmed','queue_full','waiting_approval','waiting_editor','waiting_dialog','waiting_desktop_approval','approval_unconfirmed','delivering_reply','binding_failed','not_sent','submission_unconfirmed','execution_unconfirmed','execution_failed','reply_delivery_unconfirmed')"
+const statusRequestStages = "('steer_submitting','steer_submitted','steer_unknown','queued','starting','resuming','downloading_attachment','submitting','waiting_desktop_submit','checking_desktop','preserving_draft','restoring_draft','waiting_draft','waiting_desktop','switching_desktop','waiting_model','completed','outcome_unconfirmed','queue_full','waiting_approval','waiting_editor','waiting_dialog','waiting_desktop_approval','approval_unconfirmed','delivering_reply','binding_failed','not_sent','submission_unconfirmed','execution_unconfirmed','execution_failed','reply_delivery_unconfirmed')"
 
 func (s *Store) ReadSessionStatus(thread string) (SessionStatus, error) {
 	var out SessionStatus

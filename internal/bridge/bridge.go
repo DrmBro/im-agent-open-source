@@ -20,6 +20,13 @@ import (
 )
 
 type Bridge struct {
+	steerScheduled      sync.Map
+	followJobs          *queue.Queue
+	followScheduled     sync.Map
+	personalStartedAt   int64
+	cli                 *codex.Client
+	threadChannels      sync.Map
+	presentationLocks   sync.Map
 	approvalCardLocks   sync.Map
 	controlJobs         *queue.Queue
 	controlLocks        sync.Map
@@ -63,6 +70,22 @@ func New(cfg config.Config, db *store.Store, cx *codex.Client, adapters map[stri
 func (b *Bridge) Start(parent context.Context) error {
 	ctx, cancel := context.WithCancel(parent)
 	defer cancel()
+	b.personalStartedAt = time.Now().UnixMilli()
+	routes, err := b.store.SessionChannels()
+	if err != nil {
+		return err
+	}
+	for thread, channel := range routes {
+		if config.UsesDirectCodex(channel) && b.cli == nil {
+			return errors.New("钉钉 CLI 执行通道尚未初始化")
+		}
+		b.threadChannels.Store(thread, channel)
+	}
+	for _, connection := range b.cfg.Connections {
+		if config.UsesDirectCodex(connection.Type) && b.cli == nil {
+			return errors.New("钉钉 CLI 执行通道尚未初始化")
+		}
+	}
 	b.jobs = queue.New(ctx, b.cfg.Limits.Workers, b.cfg.Limits.QueueSize)
 	if err := b.store.RecoverInboundStates(); err != nil {
 		return err
@@ -73,8 +96,14 @@ func (b *Bridge) Start(parent context.Context) error {
 	b.statusCardJobs = queue.New(ctx, 2, 32)
 	b.reportJobs = queue.New(ctx, 1, 8)
 	b.controlJobs = queue.New(ctx, 2, 32)
+	b.followJobs = queue.New(ctx, 2, 32)
 
 	b.codex.SetHandler(b.handleCodexRequest)
+	var cliDone <-chan struct{}
+	if b.cli != nil && b.cli != b.codex {
+		b.cli.SetHandler(b.handleCodexRequest)
+		cliDone = b.cli.Done()
+	}
 	for _, adapter := range b.channels {
 		if lifecycle, ok := adapter.(im.LifecycleAdapter); ok {
 			lifecycle.SetClosedHandler(b.conversationClosed)
@@ -135,6 +164,8 @@ func (b *Bridge) Start(parent context.Context) error {
 	select {
 	case <-parent.Done():
 		result = parent.Err()
+	case <-cliDone:
+		result = errors.New("钉钉 Codex CLI 已退出")
 	case <-b.codex.Done():
 		result = errors.New("Codex App Server 已退出")
 	case result = <-failures:
@@ -145,6 +176,7 @@ func (b *Bridge) Start(parent context.Context) error {
 	b.statusCardJobs.Wait()
 	b.reportJobs.Wait()
 	b.controlJobs.Wait()
+	b.followJobs.Wait()
 	return result
 }
 func (b *Bridge) receiveMessage(ctx context.Context, msg im.Message) error {
@@ -152,7 +184,7 @@ func (b *Bridge) receiveMessage(ctx context.Context, msg im.Message) error {
 	if !ok {
 		return errors.New("未找到消息连接")
 	}
-	if !b.allowed(msg.Address.Connection, msg.UserID) {
+	if !b.messageAllowed(adapter, msg) {
 		return nil
 	}
 	target, retired, err := b.store.RetiredTarget(msg.Address)
@@ -180,6 +212,9 @@ func (b *Bridge) receiveMessage(ctx context.Context, msg im.Message) error {
 	if len([]rune(msg.Text)) > b.cfg.Limits.MaxInputChars {
 		_, _ = adapter.SendText(ctx, msg.Address, fmt.Sprintf("消息超过 %d 个字符，请拆分后重试。", b.cfg.Limits.MaxInputChars), msg.ID)
 		return nil
+	}
+	if msg.Followup && msg.FollowupTarget == "" {
+		return b.store.StageGroupFollowup(msg)
 	}
 	intake := b.imageIntakeLock(msg)
 	intake.Lock()
@@ -209,7 +244,14 @@ func (b *Bridge) processClaimedInbound(ctx context.Context, adapter im.Adapter, 
 		return nil
 	}
 	msg = prepared
-	if len(msg.Attachments) == 0 && strings.HasPrefix(msg.Text, "/") {
+	if adapter.Capabilities().PersonalInbox {
+		if err := b.store.PutPersonalInbox(msg); err != nil {
+			return err
+		}
+		_ = b.store.EventDone(msg.ID, "done")
+		return nil
+	}
+	if !adapter.Capabilities().PersonalInbox && len(msg.Attachments) == 0 && strings.HasPrefix(msg.Text, "/") {
 		if err := b.store.EventStage(msg.ID, msg.Address.Key(), "command_running", ""); err != nil {
 			return err
 		}
@@ -234,7 +276,9 @@ func (b *Bridge) processClaimedInbound(ctx context.Context, adapter im.Adapter, 
 		if errors.As(err, &userHint) {
 			hint = string(userHint)
 		}
-		_, _ = adapter.SendText(ctx, msg.Address, hint, store.Hash(msg.Address.Key() + msg.ID + "error")[:32])
+		if !adapter.Capabilities().PersonalInbox {
+			_, _ = adapter.SendText(ctx, msg.Address, hint, store.Hash(msg.Address.Key() + msg.ID + "error")[:32])
+		}
 		_ = b.store.EventDone(msg.ID, "failed")
 		_ = b.store.FinishImageDraft(msg.ID, "failed")
 		return err
@@ -250,6 +294,36 @@ func (b *Bridge) processClaimedInbound(ctx context.Context, adapter im.Adapter, 
 	_ = b.enqueueSessionStatus(session.ThreadID, false, msg.ID)
 	return nil // 入站内容已持久化；队列满只推迟调度，不要求平台再次投递。
 }
+func (b *Bridge) PersonalInbox(ctx context.Context) ([]store.PersonalInboxItem, error) {
+	today := time.Now().In(time.FixedZone("Asia/Shanghai", 8*3600))
+	start := time.Date(today.Year(), today.Month(), today.Day(), 0, 0, 0, 0, today.Location()).Unix()
+	return b.store.PersonalInbox(ctx, start)
+}
+func (b *Bridge) CreatePersonalInboxSession(ctx context.Context, id string) error {
+	m, e := b.store.InboxMessage(id)
+	if e != nil {
+		return e
+	}
+	a := b.channels[m.Address.Connection]
+	if a == nil {
+		return errors.New("消息连接不存在")
+	}
+	if e = b.store.MarkPersonalInbox(id, "processing"); e != nil {
+		return e
+	}
+	s, e := b.getOrCreateSession(ctx, a, m)
+	if e != nil {
+		return e
+	}
+	if e = b.store.QueueInbound(s, m); e != nil {
+		return e
+	}
+	return b.scheduleInbound(store.QueuedInbound{EventID: m.ID, ThreadID: s.ThreadID, AddressKey: store.Hash(s.Address.Key()), Message: m})
+}
+func (b *Bridge) IgnorePersonalInbox(id string) error {
+	return b.store.MarkPersonalInbox(id, "ignored")
+}
+
 func (b *Bridge) allowed(connection, user string) bool {
 	for _, c := range b.cfg.Connections {
 		if c.ID == connection {
@@ -301,26 +375,31 @@ func (b *Bridge) getOrCreateSession(ctx context.Context, adapter im.Adapter, msg
 	if shared || (!msg.IsDirect && b.conn(msg.Address.Connection).ConversationMode == "topic") {
 		return store.Session{}, diagnostics.UserError("请在已绑定的话题内发送消息，或发送 /new 创建新话题；群主界面不会执行模型任务")
 	}
-	t, err := b.codex.StartThread(ctx, b.cfg)
-	if err != nil {
+	if err := b.checkCreationPermissionFailure(msg.Address); err != nil {
 		return store.Session{}, err
 	}
+	t, err := b.engineForConnection(msg.Address.Connection).StartThread(ctx, b.configForConnection(msg.Address.Connection))
+	if err != nil {
+		return store.Session{}, b.recordCreationPermissionFailure(msg.Address, t.ID, err)
+	}
 	address := msg.Address
-	if msg.IsDirect {
+	if msg.IsDirect && adapter.Capabilities().CreateConversation {
 		address, err = b.newSessionAddress(ctx, adapter, msg, t)
 		if err != nil {
 			return store.Session{}, err
 		}
 	}
 	s = store.Session{ThreadID: t.ID, Address: address, WorkDir: t.Cwd, Owner: msg.UserID, Managed: msg.IsDirect && address.Key() != msg.Address.Key(), GroupName: b.threadName(t, msg.Address.Connection), Fresh: true}
-	if err := b.store.Save(s); err != nil {
+	if err := b.saveSession(s); err != nil {
 		return store.Session{}, err
 	}
 	b.sessionCreatedNotice(ctx, adapter, msg, s)
 	b.mu.Lock()
 	b.turns[t.ID] = ""
 	b.mu.Unlock()
-	_, _ = adapter.SendText(ctx, address, fmt.Sprintf("已创建 Codex 会话 `%s`。", shortID(t.ID)), msg.ID)
+	if !adapter.Capabilities().PersonalInbox {
+		_, _ = adapter.SendText(ctx, address, fmt.Sprintf("已创建 Codex 会话 `%s`。", shortID(t.ID)), msg.ID)
+	}
 	return s, nil
 }
 func (b *Bridge) runTurn(ctx context.Context, adapter im.Adapter, s store.Session, msg im.Message) (runErr error) {
@@ -331,14 +410,22 @@ func (b *Bridge) runTurn(ctx context.Context, adapter im.Adapter, s store.Sessio
 			runErr = &requestFailure{kind: failureKind, cause: runErr}
 		}
 	}()
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	if err := b.inboundAccess(s, msg); err != nil {
+		return err
+	}
 	_ = b.store.EventStage(msg.ID, s.Address.Key(), "starting", "")
-	_, _ = adapter.SendText(ctx, s.Address, "已收到，正在处理…", msg.ID)
+	if !adapter.Capabilities().PersonalInbox {
+		_, _ = adapter.SendText(ctx, s.Address, "已收到，正在处理…", msg.ID)
+	}
 	turnCtx, finish, err := b.beginExecution(ctx, s.ThreadID)
 	if err != nil {
 		return err
 	}
 	defer finish()
-	archived, err := b.codex.Archived(turnCtx)
+	archived, err := b.engineForThread(s.ThreadID).Archived(turnCtx)
 	if err != nil {
 		return diagnostics.UserError("无法确认归档状态，暂不恢复该会话")
 	}
@@ -349,14 +436,14 @@ func (b *Bridge) runTurn(ctx context.Context, adapter im.Adapter, s store.Sessio
 		}
 	}
 	_ = b.store.EventStage(msg.ID, s.Address.Key(), "resuming", "")
-	resumed, err := b.codex.ResumeThread(turnCtx, b.cfg, s.ThreadID)
+	resumed, err := b.engineForThread(s.ThreadID).ResumeThread(turnCtx, b.configForConnection(s.Address.Connection), s.ThreadID)
 	if err != nil {
 		return err
 	}
 	if err = b.store.UpdateWorkDir(s.ThreadID, resumed.Cwd); err != nil {
 		return err
 	}
-	notices, closeSub, err := b.codex.Subscribe(s.ThreadID)
+	notices, closeSub, err := b.engineForThread(s.ThreadID).Subscribe(s.ThreadID)
 	if err != nil {
 		return err
 	}
@@ -369,6 +456,9 @@ func (b *Bridge) runTurn(ctx context.Context, adapter im.Adapter, s store.Sessio
 		}
 		msg.Text = text
 	}
+	if err := b.inboundAccess(s, msg); err != nil {
+		return err
+	}
 	_ = b.store.EventStage(msg.ID, s.Address.Key(), "submitting", "")
 	failureKind = requestSubmissionUnknown
 	// 提交回调只发布有界快照，不在桌面提交锁内等待数据库或网络。
@@ -380,12 +470,25 @@ func (b *Bridge) runTurn(ctx context.Context, adapter im.Adapter, s store.Sessio
 		failureKind = requestNotSent
 		return diagnostics.UserError("无法读取会话模型设置，本条未提交")
 	}
-	turnID, err := b.codex.TurnWithHooks(turnCtx, s.ThreadID, msg.Text, codex.TurnHooks{
+	turnID, err := b.engineForThread(s.ThreadID).TurnWithHooks(turnCtx, s.ThreadID, msg.Text, codex.TurnHooks{
 		Model: modelPreference.Model, Effort: modelPreference.Effort,
+		AllowSteer:          s.Address.Channel == "feishu",
 		Progress:            progress,
 		RequestID:           msg.ID,
 		DraftRecoveryNeeded: func() { draftRecoveryNeeded = true },
 		BeforeSubmit: func(path string, offset int64) error {
+			if err := turnCtx.Err(); err != nil {
+				failureKind = requestNotSent
+				return err
+			}
+			if err := b.inboundAccess(s, msg); err != nil {
+				failureKind = requestNotSent
+				return err
+			}
+			if err := b.store.CheckRequestSubmission(s, msg.ID); err != nil {
+				// 可能已有另一条提交证据；保留未知边界和来源，不按未发送清除账本。
+				return err
+			}
 			return b.registerLiveOrigin(turnCtx, s, msg, path, offset)
 		},
 	})
@@ -423,7 +526,7 @@ func (b *Bridge) runTurn(ctx context.Context, adapter im.Adapter, s store.Sessio
 	}
 	_ = b.store.EventStage(msg.ID, s.Address.Key(), "waiting_model", "")
 	_ = b.enqueueSessionStatus(s.ThreadID, false, msg.ID)
-	b.messageDiagnostic("running", "输入已提交，等待桌面接收并完成对应轮次；当前会话忙碌时可能排队，不自动重发")
+	b.messageDiagnostic("running", "输入已提交，等待 Codex 完成对应轮次；不自动重发")
 	var answer strings.Builder
 	var replies []codex.HistoryMessage
 	completedItems := map[string]bool{}
@@ -432,7 +535,7 @@ func (b *Bridge) runTurn(ctx context.Context, adapter im.Adapter, s store.Sessio
 		select {
 		case <-turnCtx.Done():
 			interruptCtx, stop := context.WithTimeout(context.Background(), 5*time.Second)
-			interruptErr := b.codex.Interrupt(interruptCtx, s.ThreadID, turnID)
+			interruptErr := b.engineForThread(s.ThreadID).Interrupt(interruptCtx, s.ThreadID, turnID)
 			stop()
 			var unconfirmed *codex.DesktopOutcomeUnconfirmed
 			if errors.As(interruptErr, &unconfirmed) {
@@ -444,7 +547,7 @@ func (b *Bridge) runTurn(ctx context.Context, adapter im.Adapter, s store.Sessio
 				return diagnostics.UserError("Codex 会话连接已关闭")
 			}
 			ev, ok := codex.DecodeThreadEvent(n)
-			if !ok || (ev.TurnID != "" && ev.TurnID != turnID) {
+			if !ok || (ev.TurnID != "" && ev.TurnID != turnID) || (ev.ThreadID != "" && ev.ThreadID != s.ThreadID) {
 				continue
 			}
 			switch ev.Kind {
@@ -525,9 +628,19 @@ func (b *Bridge) command(ctx context.Context, adapter im.Adapter, msg im.Message
 		return b.taskReportCommand(ctx, adapter, msg)
 	case "/sendfile":
 		return b.fileCommand(ctx, msg)
+	case "/respond":
+		return b.respondByText(ctx, adapter, msg, parts)
+	case "/stop":
+		return b.stopByText(ctx, adapter, msg)
 	case "/new":
+		if msg.Address.Channel == "dingtalk" {
+			return b.dingtalkNew(ctx, adapter, msg)
+		}
 		return b.openCreationForm(ctx, adapter, msg)
 	case "/fork":
+		if !adapter.Capabilities().CreateConversation {
+			return diagnostics.UserError("该渠道不自动创建会话入口，请在另一个钉钉群或私聊发起新会话")
+		}
 		b.bindMu.Lock()
 		defer b.bindMu.Unlock()
 		oldSession, e := b.store.ByChat(msg.Address)
@@ -537,16 +650,19 @@ func (b *Bridge) command(ctx context.Context, adapter im.Adapter, msg im.Message
 		if oldSession.Status != "active" {
 			return errors.New("关闭中或已归档会话不自动分叉，请显式创建新会话")
 		}
-		thread, e := b.codex.ForkThread(ctx, b.cfg, oldSession.ThreadID, "")
+		if err := b.checkCreationPermissionFailure(msg.Address); err != nil {
+			return err
+		}
+		thread, e := b.engineForThread(oldSession.ThreadID).ForkThread(ctx, b.configForConnection(msg.Address.Connection), oldSession.ThreadID, "")
 		if e != nil {
-			return e
+			return b.recordCreationPermissionFailure(msg.Address, thread.ID, e)
 		}
 		newAddress, e := b.newSessionAddress(ctx, adapter, msg, thread)
 		if e != nil {
 			return e
 		}
 		newSession := store.Session{ThreadID: thread.ID, Address: newAddress, WorkDir: thread.Cwd, Owner: msg.UserID, Managed: newAddress.Key() != msg.Address.Key(), GroupName: b.threadName(thread, msg.Address.Connection)}
-		if e = b.store.Save(newSession); e != nil {
+		if e = b.saveSession(newSession); e != nil {
 			return e
 		}
 		b.sessionCreatedNotice(ctx, adapter, msg, newSession)
@@ -572,52 +688,43 @@ func (b *Bridge) command(ctx context.Context, adapter im.Adapter, msg im.Message
 		_, _ = adapter.SendText(ctx, msg.Address, text, "")
 		return nil
 	default:
+		if msg.Address.Channel == "dingtalk" {
+			_, err := adapter.SendText(ctx, msg.Address, "支持命令：/new、/status、/stop、/respond 请求ID 选项值、/archive。首次发送文本自动绑定；已有群中请 @机器人。归档保留原群。", msg.ID)
+			return err
+		}
 		_, _ = adapter.SendText(ctx, msg.Address, "支持命令：/new、/fork、/status、/archive。话题会话归档只标记入口；独立会话归档可能解散对应自建群。", msg.ID)
 		return nil
 	}
 }
-func (b *Bridge) getOrCreateNew(ctx context.Context, adapter im.Adapter, msg im.Message) (store.Session, error) {
-	b.bindMu.Lock()
-	defer b.bindMu.Unlock()
-	t, e := b.codex.StartThread(ctx, b.cfg)
-	if e != nil {
-		return store.Session{}, e
-	}
-	a, e := b.newSessionAddress(ctx, adapter, msg, t)
-	if e != nil {
-		return store.Session{}, e
-	}
-	s := store.Session{ThreadID: t.ID, Address: a, WorkDir: t.Cwd, Owner: msg.UserID, Managed: a.Key() != msg.Address.Key(), GroupName: b.threadName(t, msg.Address.Connection), Fresh: true}
-	if e = b.store.Save(s); e != nil {
-		return store.Session{}, e
-	}
-	b.sessionCreatedNotice(ctx, adapter, msg, s)
-	return s, nil
-}
-func (b *Bridge) createSessionChat(ctx context.Context, adapter im.Adapter, msg im.Message, name string) (im.Address, error) {
+func (b *Bridge) createSessionChat(ctx context.Context, adapter im.Adapter, msg im.Message, name, threadID string) (im.Address, error) {
 	cc := b.conn(msg.Address.Connection)
 	if !adapter.Capabilities().CreateConversation {
 		return im.Address{}, errors.New("当前 IM 不支持创建独立会话，不能复用已有群破坏映射")
 	}
-	intentKey := "chat-intent-v2:" + msg.Address.Connection + ":" + msg.ID + ":" + name
-	if previous, err := b.store.GetMeta(intentKey); err == nil && previous != "" {
-		var saved im.Address
-		if json.Unmarshal([]byte(previous), &saved) == nil && saved.ChatID != "" {
-			return saved, nil
-		}
+	if threadID == "" {
+		return im.Address{}, errors.New("缺少会话标识，停止自动建群")
+	}
+	// 按目标会话记账，标题变化或从不同入口重试都不能绕过创建记录。
+	intentKey := "chat-intent-v3:" + store.Hash(adapter.Identity().Key()+"\x00"+threadID)
+	legacyKey := "chat-intent-v2:" + msg.Address.Connection + ":" + msg.ID + ":" + name
+	var saved im.Address
+	previous, err := b.store.GetMeta(legacyKey)
+	if err != nil && !errors.Is(err, sql.ErrNoRows) {
+		return im.Address{}, err
+	}
+	if err == nil && (json.Unmarshal([]byte(previous), &saved) != nil || saved.ChatID == "") {
+		return im.Address{}, errors.New("旧建群记录不完整，停止自动重建")
 	}
 	members := append([]string{}, cc.AdminUsers...)
 	if !config.Contains(members, msg.UserID) {
 		members = append(members, msg.UserID)
 	}
-	address, err := adapter.CreateConversation(ctx, im.Conversation{Name: name, Members: members, Owner: msg.UserID, IdempotencyKey: store.Hash(msg.Address.Key() + "\x00" + name)})
-	if err != nil {
-		return im.Address{}, err
-	}
-	if raw, marshalErr := json.Marshal(address); marshalErr == nil {
-		_ = b.store.SetMeta(intentKey, string(raw))
-	}
-	return address, nil
+	return b.rememberedCreate(intentKey, func() (im.Address, error) {
+		if saved.ChatID != "" {
+			return saved, nil
+		}
+		return adapter.CreateConversation(ctx, im.Conversation{Name: name, Members: members, Owner: msg.UserID, IdempotencyKey: store.Hash(intentKey)})
+	})
 }
 func (b *Bridge) receiveInteraction(ctx context.Context, in im.Interaction) error {
 	if strings.HasPrefix(in.ActionID, "desktop-approval:") {
@@ -703,6 +810,9 @@ func (b *Bridge) handleCodexRequest(ctx context.Context, method string, raw json
 	adapter := b.channels[s.Address.Connection]
 	if adapter == nil {
 		return nil, errors.New("审批对应的 IM 连接不存在")
+	}
+	if adapter.Capabilities().PersonalInbox {
+		return nil, errors.New("个人代回复不接受联系人批准本机操作；请在本机处理")
 	}
 	kind, title, text := "approval", "Codex 需要确认", "Codex 请求继续执行。"
 	buttons := []im.Button{{Label: "确认", Value: "accept"}, {Label: "取消", Value: "decline", Destructive: true}}
@@ -809,15 +919,12 @@ func shortID(s string) string {
 	}
 	return s
 }
-func safeError(e error) string {
-	if e == nil {
-		return "未知错误"
-	}
-	return e.Error()
-}
 
 // refreshRecentConversation 只更新现有历史卡片，不发送新的历史消息；失败不影响本轮已发送的模型回复。
 func (b *Bridge) refreshRecentConversation(ctx context.Context, s store.Session) {
+	lock := b.presentationLock(s.ThreadID)
+	lock.Lock()
+	defer lock.Unlock()
 	if !s.Managed || s.Status != "active" {
 		return
 	}
@@ -827,7 +934,7 @@ func (b *Bridge) refreshRecentConversation(ctx context.Context, s store.Session)
 	}
 	op, cancel := context.WithTimeout(ctx, 20*time.Second)
 	defer cancel()
-	_, messages, e := b.codex.RecentConversation(op, s.ThreadID)
+	_, messages, e := b.engineForThread(s.ThreadID).RecentConversation(op, s.ThreadID)
 	if e != nil || len(messages) == 0 {
 		return
 	}

@@ -204,7 +204,7 @@ VALUES (?,?,?,?,?,?)`, thread, e.ItemID, path, e.Offset, candidates, time.Now().
 }
 
 // 新增消息与消费位置同一事务提交，避免推进游标后丢掉消息。
-func (s *Store) CommitMirrorBatch(thread string, c MirrorCursor, next int64, entries []MirrorEntry, issues []MirrorReadIssue) error {
+func (s *Store) CommitMirrorBatch(thread string, c MirrorCursor, next int64, entries []MirrorEntry, issues []MirrorReadIssue, checkpoint ...string) error {
 	tx, err := s.db.Begin()
 	if err != nil {
 		return err
@@ -236,6 +236,15 @@ VALUES (?,?,?,?,?,?,?) ON CONFLICT(thread_id,path,byte_offset) DO NOTHING`,
 	}
 	if n != 1 {
 		return errors.New("实时消息消费位置发生变化，未提交部分结果")
+	}
+	if len(checkpoint) > 0 {
+		if len(checkpoint) != 1 || len(checkpoint[0]) != 64 {
+			return errors.New("日志检查点摘要无效")
+		}
+		if _, err = tx.Exec(`INSERT INTO live_mirror_checkpoints(thread_id,path,byte_offset,fingerprint) VALUES(?,?,?,?)
+ ON CONFLICT(thread_id,path) DO UPDATE SET byte_offset=excluded.byte_offset,fingerprint=excluded.fingerprint`, thread, c.Path, next, checkpoint[0]); err != nil {
+			return err
+		}
 	}
 	// 旧游标只作为最近已处理文件的可见进度；逐文件账本才是扫描权威。
 	if _, err = tx.Exec("UPDATE live_mirror_cursors SET path=?,byte_offset=?,updated_at=? WHERE thread_id=?", c.Path, next, time.Now().Unix(), thread); err != nil {
@@ -274,11 +283,15 @@ func (s *Store) EnqueueMirrorReply(thread string, e MirrorEntry) error {
 
 // 未确认送达与暂未到重试时间的片段均不占用批次，不阻塞后续独立消息。
 // 同一消息内仍按片段顺序发送；先前片段未确认时不跳到后续片段。
-func (s *Store) MirrorParts(thread string) ([]MirrorPart, error) {
+func (s *Store) MirrorParts(thread string, personal ...bool) ([]MirrorPart, error) {
+	guard := ""
+	if len(personal) > 0 && personal[0] {
+		guard = " AND EXISTS(SELECT 1 FROM personal_reviews v WHERE v.thread_id=p.thread_id AND v.delivery_item=p.item_id AND v.state IN ('approved','sending')) "
+	}
 	rows, err := s.db.Query(`SELECT p.item_id, p.part_index, p.body, p.state, p.error, p.next_attempt, e.role
 FROM live_mirror_parts p
          JOIN live_mirror_entries e ON e.thread_id = p.thread_id AND e.item_id = p.item_id
-WHERE p.thread_id = ?
+WHERE p.thread_id = ? AND e.suppressed=0 `+guard+`
   AND p.state = 'pending' AND p.next_attempt <= ?
   AND NOT EXISTS (SELECT 1 FROM live_mirror_parts earlier
                   WHERE earlier.thread_id = p.thread_id AND earlier.item_id = p.item_id
@@ -300,7 +313,7 @@ LIMIT 30`, thread, time.Now().Unix())
 	return out, rows.Err()
 }
 func (s *Store) ClaimMirrorPart(p MirrorPart) (bool, error) {
-	r, err := s.db.Exec(`UPDATE live_mirror_parts SET state='sending',updated_at=?
+	r, err := s.db.Exec(`UPDATE live_mirror_parts SET state='sending',updated_at=?,attempts=attempts+1
  WHERE thread_id=? AND item_id=? AND part_index=? AND state='pending' AND next_attempt<=?`, time.Now().Unix(), p.ThreadID, p.ItemID, p.Index, time.Now().Unix())
 	if err != nil {
 		return false, err
@@ -321,8 +334,8 @@ func (s *Store) MirrorPartFailed(p MirrorPart, hint string, unknown bool) error 
 	if unknown {
 		state = "unknown"
 	}
-	_, err := s.db.Exec(`UPDATE live_mirror_parts SET state=?,error=?,next_attempt=?,updated_at=?
- WHERE thread_id=? AND item_id=? AND part_index=? AND state='sending'`, state, hint, time.Now().Unix()+30, time.Now().Unix(), p.ThreadID, p.ItemID, p.Index)
+	_, err := s.db.Exec(`UPDATE live_mirror_parts SET state=?,error=?,next_attempt=?+MIN(300,5*(1 << MIN(MAX(attempts-1,0),6))),updated_at=?
+ WHERE thread_id=? AND item_id=? AND part_index=? AND state='sending'`, state, hint, time.Now().Unix(), time.Now().Unix(), p.ThreadID, p.ItemID, p.Index)
 	return err
 }
 func (s *Store) MirrorReplySent(thread, item string) (bool, error) {
@@ -331,7 +344,7 @@ func (s *Store) MirrorReplySent(thread, item string) (bool, error) {
 	return total > 0 && remaining == 0, err
 }
 func (s *Store) LiveMirrorSessions() ([]Session, error) {
-	rows, err := s.db.Query("SELECT " + columns + " FROM sessions WHERE status='active' AND managed_chat=1 ORDER BY created_at,thread_id")
+	rows, err := s.db.Query("SELECT " + columns + " FROM sessions WHERE status='active' AND (managed_chat=1 OR channel IN ('dingtalk','dingtalk_personal')) ORDER BY created_at,thread_id")
 	if err != nil {
 		return nil, err
 	}

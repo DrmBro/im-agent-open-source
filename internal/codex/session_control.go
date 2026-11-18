@@ -7,6 +7,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"im-agent/internal/diagnostics"
 	"strings"
 	"time"
@@ -32,7 +33,7 @@ type ControlTurn struct {
 
 func (c *cdpClient) controlRequest(ctx context.Context, method string, params map[string]any) (json.RawMessage, error) {
 	switch method {
-	case "thread/read", "thread/resume", "thread/turns/list", "turn/start", "turn/interrupt":
+	case "thread/read", "thread/resume", "thread/turns/list", "turn/start", "turn/interrupt", "turn/steer":
 	default:
 		return nil, errors.New("不支持的会话控制操作")
 	}
@@ -61,7 +62,18 @@ func (c *cdpClient) controlRequest(ctx context.Context, method string, params ma
 	case "unavailable", "rejected":
 		return nil, diagnostics.UserError("当前桌面连接不支持会话控制，未切换其他提交通道")
 	case "rpc_error":
-		return nil, diagnostics.UserError("桌面拒绝会话控制请求，请检查会话状态与所选模型，未自动重发")
+		code, _ := result["code"].(float64)
+		reason, _ := result["reason"].(string)
+		detail := "桌面执行服务拒绝会话控制请求"
+		switch reason {
+		case "not_found":
+			detail = "目标会话不存在或已被移除"
+		case "invalid_params":
+			detail = "桌面拒绝会话控制参数"
+		case "authentication":
+			detail = "桌面登录或授权状态不可用"
+		}
+		return nil, diagnostics.UserError(fmt.Sprintf("%s（code=%d）", detail, int(code)))
 	default:
 		return nil, &SessionControlUnconfirmed{}
 	}
@@ -135,49 +147,20 @@ func (c *Client) selectedModelTurn(ctx context.Context, thread, text string, hoo
 	if hooks.Model != "" && (!telemetryModelName.MatchString(hooks.Model) || hooks.Effort == "") {
 		return "", diagnostics.UserError("模型或思考程度无效，本条未提交")
 	}
-	// 等待只读状态，不占全局输入焦点锁，也不清理任何会话的草稿。
-	readyCtx, stopReady := context.WithTimeout(ctx, 120*time.Second)
-	defer stopReady()
-	reported := false
-	for {
-		if readyCtx.Err() != nil {
-			return "", diagnostics.UserError("等待目标会话空闲已结束，本条尚未提交，原草稿保持不动")
-		}
-		raw, err := c.sessionControlCall(readyCtx, "thread/read", map[string]any{"threadId": thread, "includeTurns": false})
+	method, activeTurn := "turn/start", ""
+	if hooks.AllowSteer {
+		var err error
+		activeTurn, err = c.ActiveControlTurn(ctx, thread)
 		if err != nil {
-			return "", diagnostics.UserError("无法通过桌面连接确认目标会话，本条未提交；没有操作输入框或草稿")
+			return "", err
 		}
-		var before struct {
-			Thread struct {
-				ID     string `json:"id"`
-				Status struct {
-					Type string `json:"type"`
-				} `json:"status"`
-			} `json:"thread"`
+		if activeTurn != "" {
+			method = "turn/steer"
 		}
-		if json.Unmarshal(raw, &before) != nil || before.Thread.ID != thread {
-			return "", diagnostics.UserError("桌面返回的目标会话身份不一致，本条未提交")
-		}
-		if before.Thread.Status.Type == "notLoaded" {
-			raw, err = c.sessionControlCall(readyCtx, "thread/resume", map[string]any{"threadId": thread})
-			if err != nil || json.Unmarshal(raw, &before) != nil || before.Thread.ID != thread {
-				return "", diagnostics.UserError("目标会话未能在桌面执行服务中加载，本条未提交；未切换窗口或清理草稿")
-			}
-		}
-		if before.Thread.Status.Type == "idle" {
-			break
-		}
-		if before.Thread.Status.Type != "active" {
-			return "", diagnostics.UserError("目标会话状态尚未确认，本条未提交；未切换窗口或清理草稿")
-		}
-		if !reported && hooks.Progress != nil {
-			hooks.Progress("waiting_desktop", "目标会话仍有轮次执行，本条尚未提交；等待其结束，不打断，也不改动草稿。")
-			reported = true
-		}
-		select {
-		case <-readyCtx.Done():
-			return "", diagnostics.UserError("等待目标会话空闲已结束，本条尚未提交，原草稿保持不动")
-		case <-time.After(time.Second):
+	}
+	if activeTurn == "" {
+		if err := c.waitSessionReady(ctx, thread, hooks); err != nil {
+			return "", err
 		}
 	}
 	path, offset := findDesktopRollout(c.runtimeConfig.Codex.Home, thread)
@@ -187,10 +170,13 @@ func (c *Client) selectedModelTurn(ctx context.Context, thread, text string, hoo
 		}
 	}
 	params := map[string]any{"threadId": thread, "input": []map[string]any{{"type": "text", "text": text}}}
-	if hooks.Model != "" {
+	if activeTurn != "" {
+		params["expectedTurnId"] = activeTurn
+	}
+	if hooks.Model != "" && activeTurn == "" {
 		params["model"], params["effort"] = hooks.Model, hooks.Effort
 	}
-	raw, e := c.sessionControlCall(ctx, "turn/start", params)
+	raw, e := c.sessionControlCall(ctx, method, params)
 	if e != nil {
 		var known diagnostics.UserError
 		if errors.As(e, &known) {
@@ -199,11 +185,21 @@ func (c *Client) selectedModelTurn(ctx context.Context, thread, text string, hoo
 		return "", &SessionControlUnconfirmed{}
 	}
 	var response struct {
-		Turn struct {
+		TurnID string `json:"turnId"`
+		Turn   struct {
 			ID string `json:"id"`
 		} `json:"turn"`
 	}
-	if json.Unmarshal(raw, &response) != nil || response.Turn.ID == "" {
+	if json.Unmarshal(raw, &response) != nil {
+		return "", &SessionControlUnconfirmed{}
+	}
+	if activeTurn != "" {
+		if response.TurnID != activeTurn {
+			return "", &SessionControlUnconfirmed{}
+		}
+		response.Turn.ID = response.TurnID
+	}
+	if response.Turn.ID == "" {
 		return "", &SessionControlUnconfirmed{}
 	}
 	if !c.desktopMode() {
@@ -211,12 +207,12 @@ func (c *Client) selectedModelTurn(ctx context.Context, thread, text string, hoo
 	}
 	watchID := "desktop-" + storeHash(thread + response.Turn.ID + time.Now().String())[:16]
 	watchCtx, cancel := context.WithCancel(ctx)
-	c.nativeMu.Lock()
+	c.desktopTurnsMu.Lock()
 	if old := c.desktopTurns[thread]; old != nil {
 		old()
 	}
 	c.desktopTurns[thread] = cancel
-	c.nativeMu.Unlock()
+	c.desktopTurnsMu.Unlock()
 	go c.watchDesktopTurn(watchCtx, thread, watchID, text, path, offset, response.Turn.ID)
 	return watchID, nil
 }

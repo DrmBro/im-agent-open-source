@@ -57,6 +57,9 @@ def main():
         sections.append("\n".join(section))
     if missing:
         raise SystemExit("以下模块未找到许可文件，暂不继续打包：\n" + "\n".join(missing))
+    # 源码级借鉴不属于 Go module，仍须进入分发许可汇总。
+    vendor = pathlib.Path(__file__).resolve().parent.parent / "third_party" / "happy"
+    sections.append("Happy Coder Contributors — adapted source\n" + (vendor / "NOTICE.md").read_text() + "\n" + (vendor / "LICENSE").read_text())
     output.write_text(("\n\n" + "=" * 72 + "\n\n").join(sections) + "\n")
     print(f"已汇总 Go 运行时及 {len(dependencies)} 个实际编入模块的许可文件")
 

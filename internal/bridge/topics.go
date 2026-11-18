@@ -115,7 +115,7 @@ func (b *Bridge) topicParent(ctx context.Context, adapter im.Adapter, owner stri
 func (b *Bridge) newSessionAddress(ctx context.Context, adapter im.Adapter, msg im.Message, t codex.Thread) (im.Address, error) {
 	cc := b.conn(msg.Address.Connection)
 	if cc.ConversationMode != "topic" {
-		return b.createSessionChat(ctx, adapter, msg, b.threadName(t, cc.ID))
+		return b.createSessionChat(ctx, adapter, msg, b.threadName(t, cc.ID), t.ID)
 	}
 	if !cc.AutoCreateChat {
 		return im.Address{}, diagnostics.UserError("请先在客户端启用自动创建群/话题")

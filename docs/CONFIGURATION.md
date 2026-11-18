@@ -41,13 +41,13 @@
 | --- | --- | --- | --- | --- |
 | `mode` | string | `follow_local` | `follow_local`, `custom` | 默认跟随当前用户 `~/.codex`。`custom` 用于指定兼容 CLI 或配置目录。 |
 | `submission_mode` | string | `native_queue` | `native_queue`, `direct`, `desktop_queue` | 推荐 `native_queue`，通过桌面所属连接按会话 ID 提交，不操作当前输入框。`direct` 表示 Codex App Server 直接提交。`desktop_queue` 是兼容值，不建议手工填写。 |
-| `auto_switch_thread` | bool | `false` | `true`, `false` | 旧输入框兼容路径的导航设置。当前正式桌面提交按会话 ID 调用，不依赖此设置切换窗口。 |
-| `preserve_desktop_draft` | bool | `false` | `true`, `false` | 旧输入框兼容路径的草稿保护设置。当前正式提交不读写输入框草稿；未知提交结果不会回退到输入框重发。 |
-| `auto_restore_desktop_draft` | bool | `false` | `true`, `false` | 实验功能。仅在 `preserve_desktop_draft` 开启时才可能生效；默认必须保持关闭。 |
+| `auto_switch_thread` | bool | `false` | `true`, `false` | 仅保留旧配置读取兼容，界面已移除。正式桌面提交按会话 ID 调用。 |
+| `preserve_desktop_draft` | bool | `false` | `true`, `false` | 仅保留旧配置读取兼容，界面已移除。历史草稿仍可查看和导出。 |
+| `auto_restore_desktop_draft` | bool | `false` | `true`, `false` | 仅保留旧配置读取兼容，界面已移除；当前正式路径不自动恢复输入框草稿。 |
 | `binary` | string | 空 | `custom` 模式可填 | Codex CLI 路径或可在 `PATH` 中找到的名称。留空时自动发现。`follow_local` 模式会清空该字段。 |
 | `home` | string | 空 | `custom` 模式可填 | `CODEX_HOME` 目录。留空使用 `~/.codex`；必须是实际 Codex 配置目录。`follow_local` 模式会清空该字段。 |
 | `model` | string | 空 | `custom` 模式可填 | 旧版兼容模型覆盖。推荐留空，让 Codex 使用本机配置。`follow_local` 模式会清空该字段。 |
-| `sandbox` | string | `workspace-write` | `read-only`, `workspace-write` | 不允许无沙箱模式。 |
+| `sandbox` | string | `workspace-write` | `read-only`, `workspace-write` | 仅约束后台辅助进程；飞书新建和分叉会话固定为 Full Access。 |
 | `approval_policy` | string | `untrusted` | `untrusted`, `on-request` | 保存仅支持这两个值。若 CLI 帮助不再包含 `untrusted`，运行时收紧为 `on-request` + `read-only`，不修改已保存配置；详见首次配置指南。 |
 | `cdp_port` | int | `0` | `0` 或有效本机端口号 | 桌面 CDP 首选端口。`0` 表示自动探测；程序还会探测本机 9222–9235。端口必须只监听回环地址。 |
 
@@ -88,7 +88,7 @@
 | 字段 | 类型 | 默认值 | 允许范围 | 说明 |
 | --- | --- | --- | --- | --- |
 | `turn_timeout_seconds` | int | `900` | 30–7200 | 创建会话资源阶段的操作超时，不是等待用户授权的时限。 |
-| `approval_timeout_seconds` | int | `0` | `0`，兼容导入 15–1800 | 废弃的兼容字段，不再控制等待时间。授权、提问选择和表单不设等待有效期；网络请求仍有独立超时。 |
+| `approval_timeout_seconds` | int | `0` | `0`，兼容导入 15–1800 | 废弃的兼容字段，不再控制等待时间。授权、提问选择和表单不设等待有效期；桌面 Question 支持选项、自定义回答和整组跳过，原请求结束后卡片失效；网络请求仍有独立超时。 |
 | `max_message_chars` | int | `2000` | 200–3000 | 单条 IM 输出消息的字符上限。 |
 | `max_input_chars` | int | `24000` | 1–64000 | 发送给任务的输入字符上限。 |
 | `queue_size` | int | `32` | 1–512 | 每会话等待容量。 |
@@ -169,3 +169,13 @@
 | 共享群 ID 无效 | 确认是机器人已加入的 `oc_` 开头群 ID。 |
 | 修改后仍使用旧配置 | 停止桥接后重新启动；后台进程不会在运行中热替换配置。 |
 | 旧 JSON 导入失败 | 删除未知字段和明文凭证字段，在客户端重新输入凭证。 |
+
+### 飞书新会话权限
+
+飞书创建或分叉的新会话明确传入 `sandbox=danger-full-access`、`approvalPolicy=never`，并核对创建回执。首问和后续桌面轮次继承会话权限；恢复时不再用后台辅助进程的只读策略覆盖会话。创建回执未确认 Full Access 时保留创建结果并报告异常，不自动重复创建或提交首问。
+
+## 飞书执行期间的补充消息
+
+飞书绑定会话仍在执行时，新增输入通过 Codex `turn/steer` 补充到经过核对的当前轮次，携带 `expectedTurnId`。空闲会话仍按原流程创建新轮次。补充回执成功后记录为已并入当前轮次，不再次进入普通任务队列；最终结果沿用原轮次同步。
+
+同一条消息使用持久领取防止重复提交，普通队列里的旧副本不能再次执行。轮次改变、回执不明和重启中断均保留待核对状态，不猜测新轮次或自动重放。补充不撤销已经执行的操作，也不自动修改本轮模型。

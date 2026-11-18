@@ -186,6 +186,7 @@ func (c *Client) startConfiguredThread(ctx context.Context, cfg config.Config, p
 	}
 	cfg.WorkDir = work
 	params := Options(cfg)
+	fullAccessCreation(params)
 	params["ephemeral"] = false
 	params["model"] = s.Model
 	params["config"] = map[string]any{"model_reasoning_effort": s.Effort}
@@ -215,6 +216,9 @@ func (c *Client) startConfiguredThread(ctx context.Context, cfg config.Config, p
 		return Thread{}, errors.New("新会话响应缺少 ID，创建结果未确认")
 	}
 	t := result.Thread
+	if e = verifyFullAccessCreation(raw); e != nil {
+		return t, e
+	}
 	if result.Model != s.Model || result.Effort != s.Effort {
 		return t, errors.New("新会话实际模型或思考程度与所选值不一致，未提交首问")
 	}

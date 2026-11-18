@@ -145,6 +145,14 @@ func New(dir string) (*Store, error) {
 		db.Close()
 		return nil, e
 	}
+	if e = s.migrateSyncHealth(); e != nil {
+		db.Close()
+		return nil, e
+	}
+	if e = s.migrateCompletionRecovery(); e != nil {
+		db.Close()
+		return nil, e
+	}
 	if e = s.migrateRequestResults(); e != nil {
 		db.Close()
 		return nil, e
@@ -184,6 +192,23 @@ func New(dir string) (*Store, error) {
 	if _, e = db.Exec(`UPDATE events SET status = 'interrupted', updated_at = ?
 WHERE status = 'processing' AND NOT EXISTS
       (SELECT 1 FROM inbound_messages i WHERE i.event_id=events.id)`, time.Now().Unix()); e != nil {
+		db.Close()
+		return nil, e
+	}
+	if e = s.migratePersonalInbox(); e != nil {db.Close();return nil,e}
+	if e = s.migratePersonalReviews(); e != nil {
+		db.Close()
+		return nil, e
+	}
+	if e = s.migrateSteer(); e != nil {
+		db.Close()
+		return nil, e
+	}
+	if e = s.migrateMessageForwards(); e != nil {
+		db.Close()
+		return nil, e
+	}
+	if e = s.migrateGroupFollowup(); e != nil {
 		db.Close()
 		return nil, e
 	}

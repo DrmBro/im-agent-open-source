@@ -150,6 +150,11 @@ func (c *Client) ReadRecoveryObservation(ctx context.Context, thread, path strin
 			if item.Type != "message" {
 				continue
 			}
+			if item.Role == "user" {
+				if text, ok := exactReplyText(item.Content); ok && internalSubagentNotification(text) {
+					continue
+				}
+			}
 			actual := item.Meta.TurnID
 			if actual == "" {
 				actual = state.CurrentTurn

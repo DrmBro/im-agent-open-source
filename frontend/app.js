@@ -1,7 +1,7 @@
 /* 原生 Wails 绑定；无远程脚本、无前端依赖、无凭证 localStorage。 */
 'use strict';
 const $ = id => document.getElementById(id);
-const titles = {overview:'概览',connections:'IM 连接',codex:'Codex 配置',limits:'运行限制',watch:'会话同步',board:'任务看板',tasks:'任务与附件'};
+const titles = {overview:'概览','personal-inbox':'个人消息',connections:'IM 连接',codex:'Codex 配置',limits:'运行限制',watch:'会话同步',board:'任务看板',tasks:'任务与附件'};
 let snapshot, draft, descriptors=[], status={}, localInfo=null, pending=new Map(), dirty=false, busy=false;
 let sourceRefreshAt=0, closureRefreshAt=0, presentationRefreshAt=0, eventRefreshAt=0;
 let savedIDs=new Set(), page='overview', polling=false;
@@ -53,7 +53,7 @@ function confirmAction(title,message){return new Promise(resolve=>{
  const cancel=e=>{e.preventDefault();done(false);};d.addEventListener('cancel',cancel);
  $('confirm-no').onclick=()=>done(false);$('confirm-yes').onclick=()=>done(true);d.showModal();
  });}
-function navigate(p){if(p!=='board')window.taskBoard?.leave();if(p!=='tasks'){historyPage('drafts').generation++;clearTaskDelivery();if($('desktop-draft-list')){$('desktop-draft-list').replaceChildren();desktopDraftSignature='';}}page=p;Object.keys(titles).forEach(key=>$('page-'+key).hidden=key!==p);document.querySelectorAll('.nav').forEach(n=>n.classList.toggle('active',n.dataset.page===p));$('breadcrumb').textContent=titles[p];if(p==='board')window.taskBoard?.enter();if(p==='tasks')task(refreshTaskCenter);if(p==='overview')refreshBackground().catch(()=>{});}
+function navigate(p){if(p!=='board')window.taskBoard?.leave();if(p!=='personal-inbox')window.personalInbox?.leave();if(p!=='tasks'){historyPage('drafts').generation++;clearTaskDelivery();if($('desktop-draft-list')){$('desktop-draft-list').replaceChildren();desktopDraftSignature='';}}page=p;Object.keys(titles).forEach(key=>$('page-'+key).hidden=key!==p);document.querySelectorAll('.nav').forEach(n=>n.classList.toggle('active',n.dataset.page===p));$('breadcrumb').textContent=titles[p];if(p==='board')window.taskBoard?.enter();if(p==='personal-inbox')window.personalInbox?.enter();if(p==='tasks')task(refreshTaskCenter);if(p==='overview')refreshBackground().catch(()=>{});}
 function bindValue(parent,label,value,set,{help='',type='text',options=null,pick=null,disabled=false}={}){
  const field=node('div','field'),lab=node('label','',label);const input=node(options?'select':type==='textarea'?'textarea':'input');
  const id='field-'+crypto.randomUUID();input.id=id;lab.htmlFor=id;field.append(lab);
@@ -91,6 +91,8 @@ function updateStatus(){
    $('status-title').textContent='IM 已连接 · 收件对账异常';$('status-heading').textContent='收件对账需要检查';$('status-dot').className='dot failed';
   }else if(scan.scan_phase==='failed'){
    $('status-title').textContent='进程运行 · 自动同步失败';$('status-heading').textContent='会话同步遇到问题';$('status-dot').className='dot failed';
+  }else if(scan.approval_phase==='degraded'||scan.live_phase==='degraded'){
+   $('status-title').textContent='进程运行 · 部分同步需核对';$('status-heading').textContent='请查看同步诊断';$('status-dot').className='dot failed';
   }else if(connections.length&&connections.every(c=>c.phase==='connected')){
    $('status-title').textContent='IM 已连接';$('status-heading').textContent='消息入口已连接';
   }else{$('status-title').textContent='进程运行 · 等待 IM 连接';$('status-heading').textContent='正在连接消息入口';}
@@ -114,6 +116,9 @@ function updateStatus(){
  $('message-health').textContent='消息处理：'+(diag.message||'尚未收到通过白名单的消息');
  const intake=$('intake-health');if(intake)intake.textContent='收件对账：'+(diag.intake||'尚未完成群历史对账；连接正常不代表消息已收到');
  const live=$('live-sync-health');if(live)live.textContent='实时消息：'+(diag.live_sync||'启动后从新消息开始逐条同步');
+ const approval=$('approval-sync-health');if(approval)approval.textContent='审批同步：'+(diag.approval_sync||'等待首次核对桌面审批目录');
+ const build=$('build-health');if(build)build.textContent='运行版本：'+(status.build?.revision||'未记录')+' · 源码摘要 '+(status.build?.source_digest||'未记录').slice(0,12);
+ renderSyncHealth(diag.sessions||[]);
 
 }
 function renderConnections(){
@@ -123,7 +128,7 @@ function renderConnections(){
   const d=connectionDescriptor(c);const shell=node('details','panel connection connection-fold'),panel=node('div','connection-fields'),head=node('summary','connection-header'),intro=node('div');shell.open=connectionExpansion.has(c.id)?connectionExpansion.get(c.id):!savedIDs.has(c.id);shell.ontoggle=()=>connectionExpansion.set(c.id,shell.open);intro.append(node('h3','',d?.name||c.type),node('p','',c.id||'新连接'));const remove=node('button','btn danger small','删除连接');remove.onclick=()=>task(async()=>{if(!await confirmAction('删除连接？','保存后会删除该连接的本地加密凭证；业务历史保留。正在运行的连接不会立即停止。'))return;draft.connections=draft.connections.filter(x=>x!==c);if(draft.watch.connection_id===c.id){draft.watch.enabled=false;draft.watch.connection_id='';}for(const [k,v] of pending){if(v.connection_id===c.id)pending.delete(k);}modified();renderConnections();renderWatch();});const health=node('span','badge connection-live-status');health.dataset.connection=c.id;head.append(intro,health,node('span','muted','展开 / 收起'));shell.append(head,panel);panel.append(remove);
   const basic=node('div','two-cols');
   bindValue(basic,'连接 ID',c.id,value=>{const old=c.id;connectionExpansion.set(value,shell.open);if(old!==value)connectionExpansion.delete(old);c.id=value;health.dataset.connection=value;for(const [k,v] of [...pending]){if(v.connection_id===old){pending.delete(k);v.connection_id=value;pending.set(value+'\0'+v.field,v);}}head.querySelector('p').textContent=value;renderWatch();},{disabled:savedIDs.has(c.id),help:'唯一标识；保存后不可直接改名，避免凭证与会话关联错位。'});
-  bindValue(basic,'渠道',c.type,value=>{c.type=value;if(!descriptors.find(x=>x.type===value)?.supports_topics)c.conversation_mode='group';for(const [k,v] of pending){if(v.connection_id===c.id)pending.delete(k);}renderConnections();},{disabled:savedIDs.has(c.id),options:descriptors.map(x=>[x.type,x.name])});panel.append(basic);
+  bindValue(basic,'渠道',c.type,value=>{c.type=value;if(value!=='dingtalk_personal'){c.personal_auto_reply_users=[];c.personal_all_direct=false;c.personal_mentions=false;c.personal_group_followup=false;c.personal_followup_minutes=0;}if(value==='dingtalk'||value==='dingtalk_personal'){c.auto_create_chat=false;c.shared_chat_id='';}if(!descriptors.find(x=>x.type===value)?.supports_topics)c.conversation_mode='group';for(const [k,v] of pending){if(v.connection_id===c.id)pending.delete(k);}renderConnections();},{disabled:savedIDs.has(c.id),options:descriptors.map(x=>[x.type,x.name])});panel.append(basic);
   (d?.credentials||[]).forEach(f=>{
    const field=node('div','field'),label=node('label','',f.label+(f.required?' *':'')),key=c.id+'\0'+f.key;
    const stored=snapshot.credentials?.[c.id]?.[f.key]||'missing';const state=node('span','secret-status '+stored,{saved:'已加密保存',missing:'未配置'}[stored]);label.append(state);field.append(label);
@@ -143,10 +148,10 @@ function renderConnections(){
     panel.append(node('p','muted','在机器人私聊或共享群发送 /new 创建话题，后续进入对应话题交流。归档只标记话题入口，不解散共享群。'));
    }
   }
-  toggle(panel,'允许自动创建会话群聊 / 话题',c.auto_create_chat,v=>c.auto_create_chat=v,'会话自动发现功能要求目标连接开启此项。');list.append(shell);updateConnectionStatuses();
+  if(c.type==='dingtalk_personal'){toggle(panel,'接收全部个人单聊',!!c.personal_all_direct,v=>c.personal_all_direct=v,'开启后无需逐个添加联系人，消息默认进入人工审核。');toggle(panel,'接收群内 @我的消息',!!c.personal_mentions,v=>{c.personal_mentions=v;if(!v)c.personal_group_followup=false;},'只接收 @你的消息，不订阅群内所有消息；群回复必须人工确认。');panel.append(node('p','notice','个人消息默认先判断并生成草稿，通过桌面通知和任务看板等待本人审核，不直接回复。管理员只填本人 openDingtalkId，未开启全部单聊时，白名单填写本人和允许处理的联系人；开启后白名单仍用于指定自动回复规则。模型可调用现有工具处理业务，回复由本人审核。'));bindValue(panel,'允许自动回复的联系人（可选，默认全部待审核）',(c.personal_auto_reply_users||[]).join('\n'),v=>c.personal_auto_reply_users=listValue(v),{type:'textarea',help:'只填写白名单中希望自动回复的联系人 openDingtalkId，每行一个。仅对规则生效后新收到、模型明确判断能够处理的消息自动回复；需要补充信息或人工决定的消息仍等待审核。'});}else if(c.type==='dingtalk'){panel.append(node('p','notice','钉钉固定通过独立 Codex CLI 执行，不依赖桌面。私聊或已有群首次发送文本后绑定会话；不自动建群。支持 /new、/status、/stop、/respond、/archive。当前不支持图片、文件和互动卡片。新会话沿用现有 Full Access 策略，仅向受信任员工开放。'));}else{toggle(panel,'允许自动创建会话群聊 / 话题',c.auto_create_chat,v=>c.auto_create_chat=v,'会话自动发现功能要求目标连接开启此项。');}list.append(shell);updateConnectionStatuses();
  });
 }
-function addConnection(){if(busy||!draft||descriptors.length===0)return;let n=1;while(draft.connections.some(c=>c.id==='im-'+n))n++;const c={id:'im-'+n,type:descriptors[0].type,allowed_users:[],admin_users:[],chat_name_prefix:'Codex',auto_create_chat:true,conversation_mode:'group',shared_chat_id:''};draft.connections.push(c);modified();renderConnections();renderWatch();navigate('connections');}
+function addConnection(){if(busy||!draft||descriptors.length===0)return;let n=1;while(draft.connections.some(c=>c.id==='im-'+n))n++;const c={id:'im-'+n,type:descriptors[0].type,allowed_users:[],admin_users:[],chat_name_prefix:'Codex',auto_create_chat:!['dingtalk','dingtalk_personal'].includes(descriptors[0].type),conversation_mode:'group',shared_chat_id:''};draft.connections.push(c);modified();renderConnections();renderWatch();navigate('connections');}
 function renderCodex(){
  const el=$('codex-fields');el.replaceChildren();
  const following=(draft.codex.mode||'follow_local')==='follow_local';
@@ -166,10 +171,7 @@ function renderCodex(){
  const project=node('details','advanced-settings');project.open=!!draft.work_dir;project.append(node('summary','','可选：新会话默认项目'));
  const projectInput=bindValue(project,'默认项目（留空自动分配）',draft.work_dir,v=>{draft.work_dir=v;invalidateLocal();},{pick:()=>api().ChooseDirectory(),help:'仅用于新建会话，不覆盖已有会话。通常无需填写；已有旧配置可点击下方按钮清空。'});
  const clearProject=node('button','btn small','清空，改为每个新会话自动分配');clearProject.type='button';clearProject.onclick=()=>{draft.work_dir='';projectInput.value='';invalidateLocal();modified();};project.append(clearProject);el.append(project);
- bindValue(el,'任务提交方式',draft.codex.submission_mode||'native_queue',v=>draft.codex.submission_mode=v,{options:[['native_queue','当前桌面会话输入（推荐）'],['direct','兼容：App Server 直接提交']],help:'推荐模式连接本机 Codex++ / CDP 桌面端，先核对当前会话 ID，再提交到桌面输入框。关闭自动切换时需手动打开目标会话；开启后定位并切换已加载的目标。发送前核对 ID，不自动回退 CLI。'});
- toggle(el,'自动切换到消息所属的 Codex 会话',draft.codex.auto_switch_thread,v=>draft.codex.auto_switch_thread=v,'开启后，飞书消息可能切换电脑上显示的会话。按已加载侧栏的会话 ID 精确定位；有草稿最多等待 120 秒并提示，不覆盖内容。切换成功后仍严格核对 ID；不支持时明确拒绝。保存后重启桥接生效。');
- toggle(el,'飞书优先提交并保留纯文本草稿（兼容模式）',!!draft.codex.preserve_desktop_draft,v=>draft.codex.preserve_desktop_draft=v,'默认关闭，仅桌面输入模式有效。只暂存当前目标会话可确认的无附件纯文本（最多64KiB）：先在本机加密备份，自动释放输入焦点并复核，文本变化则追加快照，再移走并优先提交；不要求手工确认输入法状态。候选列表及撤销栈不在备份范围。自动恢复另有独立开关；关闭时只保留本机快照，不会自动粘贴。保存后重启生效，未完成实机验收前请勿用于重要草稿。');
- toggle(el,'自动恢复桌面草稿（实验，默认关闭）',!!draft.codex.auto_restore_desktop_draft,v=>draft.codex.auto_restore_desktop_draft=v,'只有同时开启上面的草稿保留后才有效。默认关闭：飞书提交完成后只保留加密快照，需在“任务与附件 → 草稿恢复（仅本机）”手动查看或导出。开启后仍可能因真实编辑器焦点、重载或输入事件变化而恢复失败，重要草稿不要使用。保存后重启生效。');
+ bindValue(el,'任务提交方式',draft.codex.submission_mode||'native_queue',v=>draft.codex.submission_mode=v,{options:[['native_queue','当前桌面会话输入（推荐）'],['direct','独立 Codex CLI（App Server）']],help:'此设置控制飞书等渠道的提交方式。桌面模式按会话 ID 提交；独立 CLI 模式不依赖桌面。钉钉始终使用独立 CLI，不受此设置影响。'});
  bindValue(el,'沙箱',draft.codex.sandbox,v=>draft.codex.sandbox=v,{options:[['read-only','只读 · read-only'],['workspace-write','工作区可写 · workspace-write']],help:'这些设置约束辅助 App Server 或直接提交模式；桌面输入模式沿用桌面会话自身权限和审批，不会因这里选择只读而收紧桌面权限。'});
  bindValue(el,'审批策略',draft.codex.approval_policy,v=>draft.codex.approval_policy=v,{options:[['untrusted','非信任操作请求审批 · untrusted'],['on-request','由 Codex 按需请求审批 · on-request']]});
  renderLocalInfo();updateStatus();
@@ -196,6 +198,8 @@ async function load(){const view=await api().GetView();descriptors=view.channels
 $('save').onclick=()=>task(async()=>{
  const changedTopics=draft.connections.filter(c=>c.conversation_mode==='topic'&&(!snapshot.config.connections.find(old=>old.id===c.id)||snapshot.config.connections.find(old=>old.id===c.id).conversation_mode!=='topic'||snapshot.config.connections.find(old=>old.id===c.id).shared_chat_id!==c.shared_chat_id));
  if(changedTopics.length&&!await confirmAction('启用 / 更换共享群话题模式？','新会话及导入的未绑定会话将集中到共享群，根卡片、历史与回复可能被所有群成员看见。用户白名单不隔离阅读权限。旧群保持原绑定，不迁移、不解散。'))return;
+ const enabledAuto=draft.connections.flatMap(c=>(c.personal_auto_reply_users||[]).filter(u=>!(snapshot.config.connections.find(old=>old.id===c.id)?.personal_auto_reply_users||[]).includes(u)).map(u=>c.id+' / '+u));
+ if(enabledAuto.length&&!await confirmAction('开启指定联系人的自动回复？','以下联系人新消息在模型明确判断可以处理时，将以你的身份自动回复，无需逐条确认；其余消息仍进入审核。规则保存并重启桥接后生效。\n'+enabledAuto.join('\n')))return;
  const result=await api().Save({config:draft,revision:snapshot.revision,secrets:[...pending.values()]});
  applySnapshot(result);await refreshCodex();note('配置已保存到 SQLite。凭证输入已清空；已有桥接进程继续使用旧配置，需要停止后重新启动。');
 });
@@ -214,7 +218,7 @@ document.querySelectorAll('[data-go]').forEach(b=>b.onclick=()=>navigate(b.datas
 // 禁止页面导航和拖入文件，防止远程页面进入具有本机绑定的 WebView。
 document.addEventListener('click',e=>{if(e.target.closest('a'))e.preventDefault();});
 window.addEventListener('dragover',e=>e.preventDefault());window.addEventListener('drop',e=>e.preventDefault());
-async function poll(){if(polling||busy)return;polling=true;try{status=await api().GetStatus();updateStatus();if(page==='overview'&&Date.now()-eventRefreshAt>5000)await refreshEventDiagnostics();if(page==='codex'&&!dirty&&Date.now()-sourceRefreshAt>10000)await refreshCodex();if(page==='board')await window.taskBoard?.poll();if(page==='tasks'&&Date.now()-taskCenterAt>5000)await refreshTaskCenter();if(page==='watch'&&Date.now()-closureRefreshAt>5000)await refreshClosures();if(page==='watch'&&Date.now()-presentationRefreshAt>5000)await refreshPresentations();}catch{}finally{polling=false;}}
+async function poll(){if(polling||busy)return;polling=true;try{status=await api().GetStatus();updateStatus();if(page==='overview'&&Date.now()-eventRefreshAt>5000)await refreshEventDiagnostics();if(page==='codex'&&!dirty&&Date.now()-sourceRefreshAt>10000)await refreshCodex();if(page==='board')await window.taskBoard?.poll();if(page==='personal-inbox')await window.personalInbox?.poll();if(page==='tasks'&&Date.now()-taskCenterAt>5000)await refreshTaskCenter();if(page==='watch'&&Date.now()-closureRefreshAt>5000)await refreshClosures();if(page==='watch'&&Date.now()-presentationRefreshAt>5000)await refreshPresentations();}catch{}finally{polling=false;}}
 (async()=>{
  for(let attempt=0;attempt<40&&!window.go?.desktop?.API;attempt++)await new Promise(resolve=>setTimeout(resolve,100));
  await task(load);setInterval(poll,2000);
@@ -287,7 +291,7 @@ async function refreshEventDiagnostics(){
 
 
 let fileThread='',fileKind='file',fileChoices=[],taskCenterAt=0;
-const taskStageNames={not_sent:'尚未发送，可处理原因后重新提交',submission_unconfirmed:'提交结果未确认，请先核对，不要重发',execution_unconfirmed:'已提交，执行结果未确认',execution_failed:'执行失败（已提交，可能有部分结果）',reply_delivery_unconfirmed:'执行已完成，回复同步未确认',delivering_reply:'执行已完成，正在同步回复',waiting_caption:'附件等待任务说明',images_bundled:'附件已合并到任务',images_cancelled:'已取消暂存附件',images_expired:'附件已过期（未执行）',image_batch_failed:'附件组合失败',queued:'本地排队（等待同会话任务／空闲工作者）',waiting_desktop_submit:'等待本机桌面提交入口',checking_desktop:'确认桌面会话与输入区',preserving_draft:'备份并暂存桌面草稿',restoring_draft:'核对并恢复桌面草稿',received:'已接收',starting:'开始处理',resuming:'准备会话',submitting:'提交输入',waiting_model:'已提交，等待执行／回复',completed:'已发送回复',downloading_attachment:'下载附件',waiting_draft:'等待桌面草稿处理',waiting_desktop:'等待输入框',switching_desktop:'切换会话',outcome_unconfirmed:'执行结果待核对',command_completed:'命令完成',command_failed:'命令失败',binding_failed:'会话绑定失败'};
+const taskStageNames={steer_submitting:"正在补充到当前轮次",steer_submitted:"补充已送入当前轮次",steer_unknown:"补充回执待核对",not_sent:'尚未发送，可处理原因后重新提交',submission_unconfirmed:'提交结果未确认，请先核对，不要重发',execution_unconfirmed:'已提交，执行结果未确认',execution_failed:'执行失败（已提交，可能有部分结果）',reply_delivery_unconfirmed:'执行已完成，回复同步未确认',delivering_reply:'执行已完成，正在同步回复',waiting_caption:'附件等待任务说明',images_bundled:'附件已合并到任务',images_cancelled:'已取消暂存附件',images_expired:'附件已过期（未执行）',image_batch_failed:'附件组合失败',queued:'本地排队（等待同会话任务／空闲工作者）',waiting_desktop_submit:'等待本机桌面提交入口',checking_desktop:'确认桌面会话与输入区',preserving_draft:'备份并暂存桌面草稿',restoring_draft:'核对并恢复桌面草稿',received:'已接收',starting:'开始处理',resuming:'准备会话',submitting:'提交输入',waiting_model:'已提交，等待执行／回复',completed:'已发送回复',downloading_attachment:'下载附件',waiting_draft:'等待桌面草稿处理',waiting_desktop:'等待输入框',switching_desktop:'切换会话',outcome_unconfirmed:'执行结果待核对',command_completed:'命令完成',command_failed:'命令失败',binding_failed:'会话绑定失败'};
 const transferNames={sent:'已送达',received:'已保存',sending:'发送中',downloading:'下载中',failed:'失败',unknown:'结果待核对'};
 const taskStatusNames={waiting_input:'等待文字说明',bundled:'已合并提交',cancelled:'已取消',expired:'已过期（未执行）',processing:'处理中',done:'完成',failed:'失败',uncertain:'结果未确认',interrupted:'上次运行中断（未自动重放）',queued_failed:'排队失败'};
 async function refreshBackground(){
@@ -301,7 +305,7 @@ async function refreshBackground(){
 function renderRequestResult(row,result){
  if(!result)return;
  const execution={submitted:'已提交，执行结果待确认',completed:'执行已确认完成',failed:'执行已确认失败/中断'};
- const delivery={waiting_execution:'等待执行结果',awaiting_replies:'执行已完成，回复清单待核对',pending:'等待全部回复确认',sent:'全部回复已确认送达',not_applicable:'没有已确认完成的回复清单'};
+ const delivery={waiting_execution:'等待执行结果',awaiting_replies:'执行已完成，回复清单待核对',pending:'等待全部回复确认',sent:'全部回复已确认送达',unknown:'回复送达待人工核对，不自动重发',failed:'回复发送明确失败，等待重试',not_applicable:'没有已确认完成的回复清单'};
  row.append(node('p','',`${execution[result.execution]||'执行状态待核对'} · ${delivery[result.delivery]||'投递状态待核对'}`));
  if(result.expected_parts>0)row.append(node('p','muted',`回复片段确认：${result.confirmed_parts}/${result.expected_parts}`));
  if(result.recovered)row.append(node('p','muted','已依据完整回复清单恢复为完成；没有重新执行问题。'));
@@ -408,7 +412,7 @@ async function refreshTaskSection(kind){
  const list=$(ids[kind]);if(!list)return;list.replaceChildren();appendHistoryPager(list,result,()=>refreshTaskSection(kind));
  if(kind==='tasks'){
   renderWaitingSummary(list,result.waiting);
-  for(const t of result.tasks||[]){const row=node('div','closure-row');row.append(node('strong','',t.name||t.thread_id||'历史映射'),node('p','',`${taskStatusNames[t.status]||t.status} · ${taskStageNames[t.stage]||t.stage} · ${new Date(t.received_at*1000).toLocaleString()}`),node('code','',t.id));if(t.waiting_hint&&t.status==='processing')row.append(node('p','muted',t.waiting_hint));if(t.error)row.append(node('p','detect-error',t.error));renderRequestResult(row,t.result);appendTaskDeliveryButton(row,t);list.append(row);}
+  for(const t of result.tasks||[]){const row=node('div','closure-row');row.append(node('strong','',t.name||t.thread_id||'历史映射'),node('p','',`${t.state_label||taskStatusNames[t.status]||t.status} · ${new Date(t.received_at*1000).toLocaleString()}`),node('code','',t.id));if(t.waiting_hint&&t.status==='processing')row.append(node('p','muted',t.waiting_hint));if(t.error)row.append(node('p','detect-error',t.error));renderRequestResult(row,t.result);appendTaskDeliveryButton(row,t);list.append(row);}
   if(!(result.tasks||[]).length)list.append(node('p','muted','本页没有任务历史；已清理的终态记录不再显示。'));
  }else if(kind==='deliveries'){
   for(const d of result.deliveries||[]){const row=node('div','closure-row');row.append(node('strong','',d.name||d.thread_id),node('p','',`${d.state} · 片段 ${d.part+1}`),node('code','',d.item_id));if(d.error)row.append(node('p','detect-error',d.error));
@@ -503,3 +507,21 @@ $('desktop-launch-start').onclick=()=>task(async()=>{
  renderDesktopLaunch(await api().LaunchDesktopApplication(desktopLaunchState.selected,true));
  note(desktopLaunchState.ready?'桌面入口已确认可用；请自行发送新的验收问题，旧问题不会重放。':desktopLaunchState.message,!desktopLaunchState.ready);
 });
+
+function renderSyncHealth(rows){
+ const list=$('sync-health-list');if(!list)return;
+ list.replaceChildren();
+ const stamp=value=>value?new Date(value*1000).toLocaleString():'等待首次采集';
+ if(!rows.length){list.append(node('p','muted','尚无活跃会话的同步记录。'));return;}
+ for(const v of rows){
+  const row=node('div','closure-row');row.append(node('strong','',v.name||v.thread_id.slice(-8)));
+  row.append(node('p','',`日志已读 ${(v.read_offset/1024).toFixed(1)} KiB；未读 ${(v.unread_bytes/1024).toFixed(1)} KiB；最近扫描 ${stamp(v.read_at)}`));
+  row.append(node('p','',`入账 ${v.messages} 条，已确认送达 ${v.sent_messages} 条；待发送 ${v.pending}、发送中 ${v.sending}、送达待核对 ${v.unknown} 个片段`));
+  row.append(node('p','muted',`摘要状态：${({sent:'已更新',pending:'待更新',sending:'发送中',unknown:'送达待核对',empty:'暂无可展示内容'})[v.history_state]||v.history_state||'等待建立'}；最近投递检查 ${stamp(v.delivery_at)}`));
+  if(v.retry_at)row.append(node('p','muted','下次发送重试：'+stamp(v.retry_at)));
+  for(const [label,value] of [['读取',v.read_error],['投递',v.delivery_error],['历史恢复',v.recovery_error],['摘要更新',v.history_error]])if(value)row.append(node('p','detect-error',label+'：'+value));
+  if(v.read_issues)row.append(node('p','detect-error',`${v.read_issues} 条历史日志需核对，后续消息继续同步。`));
+  if(v.read_at&&Date.now()/1000-v.read_at>90&&status.phase==='running')row.append(node('p','detect-error','超过 90 秒未完成扫描，请查看后台状态。'));
+  list.append(row);
+ }
+}

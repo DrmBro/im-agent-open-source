@@ -59,10 +59,22 @@ func (s *Store) SetDesktopApprovalState(id, state, detail string) error {
 	return err
 }
 func (s *Store) ClaimDesktopApproval(id, decision, receipt string) (bool, error) {
-	if decision != "accept" && decision != "decline" {
-		return false, errors.New("审批选择无效")
+	if decision != "accept" && decision != "decline" && decision != "answer" && decision != "skip" {
+		return false, errors.New("交互选择无效")
 	}
-	r, err := s.db.Exec(`UPDATE desktop_approval_cards SET state='responding',decision=?,detail='正在向桌面发送本次选择',digest='',updated_at=? WHERE id=? AND state='pending' AND (expires_at=0 OR expires_at>?) AND delivery_state='sent' AND message_id=?`, decision, time.Now().Unix(), id, time.Now().Unix(), receipt)
+	card, err := s.DesktopApproval(id)
+	if err != nil {
+		return false, err
+	}
+	current, err := s.activeRemoteSession(card.ThreadID, card.AddressKey)
+	if err != nil {
+		return false, err
+	}
+	args := []any{decision, time.Now().Unix(), id, time.Now().Unix(), receipt, card.ThreadID, card.AddressKey}
+	args = append(args, activeRemoteSessionArgs(current)...)
+	r, err := s.db.Exec(`UPDATE desktop_approval_cards SET state='responding',decision=?,detail='正在向桌面发送本次选择',digest='',updated_at=?
+WHERE id=? AND state='pending' AND (expires_at=0 OR expires_at>?) AND delivery_state='sent' AND message_id=?
+ AND thread_id=? AND address_key=? AND `+activeRemoteSessionSQL, args...)
 	if err != nil {
 		return false, err
 	}

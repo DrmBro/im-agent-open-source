@@ -9,6 +9,7 @@ import (
 	"sync"
 
 	"im-agent/internal/bridge"
+	"im-agent/internal/buildinfo"
 	"im-agent/internal/channels"
 	"im-agent/internal/codex"
 	"im-agent/internal/config"
@@ -17,6 +18,7 @@ import (
 )
 
 type Status struct {
+	Build        buildinfo.Info        `json:"build"`
 	PolicyNotice string                `json:"policy_notice"`
 	Phase        string                `json:"phase"`
 	Message      string                `json:"message"`
@@ -47,6 +49,7 @@ func New(r *channels.Registry) *Controller {
 func (c *Controller) Status() Status {
 	c.mu.Lock()
 	status, settings, work, original := c.status, c.localConfig, c.workDir, c.localInfo
+	status.Build = buildinfo.Current()
 	status.PolicyNotice = c.policyNotice
 	status.Connections = []im.ConnectionStatus{}
 	for _, a := range c.adapters {
@@ -89,6 +92,9 @@ func (c *Controller) Start(ctx context.Context, cfg config.Config, revision int6
 	adapters := map[string]im.Adapter{}
 	for _, x := range cfg.Connections {
 		id, _ := x.Credential("app_id")
+		if config.IsPersonalChannel(x.Type) {
+			id, _ = x.Credential("profile")
+		}
 		key := x.Type + "\x00" + id
 		if id != "" && apps[key] {
 			return errors.New("同一 IM 应用不能同时配置多个连接")
@@ -137,6 +143,35 @@ func (c *Controller) run(ctx context.Context, cfg config.Config, adapters map[st
 		return errors.New("Codex 初始化失败；请确认 CLI 版本、CODEX_HOME 及本机 Codex 配置兼容")
 	}
 	defer cx.Close()
+	routes, err := db.SessionChannels()
+	if err != nil {
+		return errors.New("无法读取会话执行通道，未启动桥接")
+	}
+	needsCLI := false
+	for _, channel := range routes {
+		if config.UsesDirectCodex(channel) {
+			needsCLI = true
+		}
+	}
+	for _, connection := range cfg.Connections {
+		if config.UsesDirectCodex(connection.Type) {
+			needsCLI = true
+		}
+	}
+	var cli *codex.Client
+	if needsCLI {
+		if cfg.Codex.SubmissionMode == "direct" {
+			cli = cx
+		} else {
+			cliConfig := cfg
+			cliConfig.Codex.SubmissionMode = "direct"
+			cli, e = codex.Start(ctx, cliConfig)
+			if e != nil {
+				return errors.New("钉钉 Codex CLI 初始化失败，飞书提交配置未更改")
+			}
+			defer cli.Close()
+		}
+	}
 	if ctx.Err() != nil {
 		return ctx.Err()
 	}
@@ -151,6 +186,7 @@ func (c *Controller) run(ctx context.Context, cfg config.Config, adapters map[st
 	operationCtx, stopOperations := context.WithCancel(ctx)
 	defer stopOperations()
 	b := bridge.New(cfg, db, cx, adapters, logger)
+	b.SetCLI(cli)
 	c.mu.Lock()
 	c.bridge = b
 	c.operationContext = operationCtx

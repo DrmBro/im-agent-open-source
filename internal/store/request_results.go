@@ -146,6 +146,29 @@ WHERE event_id=? AND thread_id=? AND turn_ref=? AND sealed=0`, path, offset, tim
 	return tx.Commit()
 }
 
+// CLI 的新 thread 在首轮前可能没有 rollout。先持久化提交意图，再以真实 turn ID
+// 确认提交；若发送后崩溃仍保留未知状态，绝不因缺少日志自动重放输入。
+func (s *Store) RegisterNativeSubmissionIntent(session Session, event string) error {
+	tx, err := s.db.Begin()
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+	if err = ensureRequestResult(tx, session, event, "intent:"+event); err != nil {
+		return err
+	}
+	r, err := tx.Exec(`UPDATE request_results SET execution_state='pending_submission',updated_at=?
+WHERE event_id=? AND thread_id=? AND turn_ref=? AND sealed=0`, time.Now().Unix(), event, session.ThreadID, "intent:"+event)
+	if err != nil {
+		return err
+	}
+	n, err := r.RowsAffected()
+	if err != nil || n != 1 {
+		return errors.New("CLI 提交意图未能持久化，尚未发送")
+	}
+	return tx.Commit()
+}
+
 func (s *Store) RecordRequestSubmission(session Session, event, turn string) error {
 	tx, e := s.db.Begin()
 	if e != nil {
@@ -277,6 +300,9 @@ func (s *Store) MarkRequestFailure(event, chatKey, status, stage, detail string)
 	var beforeStatus, beforeStage, beforeDetail string
 	if e = tx.QueryRow("SELECT status,stage,error_summary FROM events WHERE id=? AND chat_key=?", event, Hash(chatKey)).Scan(&beforeStatus, &beforeStage, &beforeDetail); e != nil {
 		return false, e
+	}
+	if beforeStatus == "rejected" || beforeStatus == "cancelled" || beforeStatus == "expired" {
+		return false, nil // 迟到工作者不能覆盖主动失效的未提交输入。
 	}
 	var delivered int
 	if e = tx.QueryRow("SELECT count(*) FROM request_results WHERE event_id=? AND delivery_state='sent' AND execution_state='completed'", event).Scan(&delivered); e != nil {
@@ -569,9 +595,9 @@ FROM request_results WHERE event_id = ?`, event).Scan(&r.EventID, &r.TurnRef, &r
 	if e != nil {
 		return nil, e
 	}
-	e = db.QueryRow(`SELECT coalesce(sum(m.expected_parts),0),
-       coalesce(sum((SELECT count(*) FROM live_mirror_parts p WHERE p.thread_id = m.thread_id AND p.item_id = m.item_id AND p.state = 'sent')),0)
-FROM request_result_replies m WHERE m.event_id = ?`, event).Scan(&r.ExpectedParts, &r.ConfirmedParts)
+	var unknown, failed int
+	e = db.QueryRow(requestReplyDeliverySQL, event).Scan(&r.ExpectedParts, &r.ConfirmedParts, &unknown, &failed)
+	r.Delivery = requestDeliveryState(r.Delivery, unknown, failed)
 	if e != nil {
 		return nil, e
 	}

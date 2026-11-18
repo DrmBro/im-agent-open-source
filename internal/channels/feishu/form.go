@@ -6,6 +6,16 @@ import (
 )
 
 func formElements(c im.Card) []any {
+	submitChoice, cancelLabel, cancelChoice := c.Form.SubmitChoice, c.Form.CancelLabel, c.Form.CancelChoice
+	if submitChoice == "" {
+		submitChoice = "create"
+	}
+	if cancelLabel == "" {
+		cancelLabel = "取消"
+	}
+	if cancelChoice == "" {
+		cancelChoice = "cancel"
+	}
 	fields := []any{}
 	for _, f := range c.Form.Fields {
 		// JSON 1.0 的 form 不允许直接嵌套 div，否则客户端会丢弃整个表单。
@@ -32,6 +42,11 @@ func formElements(c im.Card) []any {
 			fields = append(fields, v)
 		}
 	}
-	fields = append(fields, map[string]any{"tag": "button", "name": "create", "action_type": "form_submit", "text": map[string]string{"tag": "plain_text", "content": c.Form.SubmitLabel}, "type": "primary", "value": map[string]string{"action_id": c.ActionID, "choice": "create"}})
-	return []any{map[string]any{"tag": "form", "name": "new_conversation", "elements": fields}, map[string]any{"tag": "action", "actions": []any{map[string]any{"tag": "button", "text": map[string]string{"tag": "plain_text", "content": "取消"}, "type": "default", "value": map[string]string{"action_id": c.ActionID, "choice": "cancel"}}}}}
+	fields = append(fields, map[string]any{"tag": "button", "name": "create", "action_type": "form_submit", "text": map[string]string{"tag": "plain_text", "content": c.Form.SubmitLabel}, "type": "primary", "value": map[string]string{"action_id": c.ActionID, "choice": submitChoice}})
+	actions := []any{}
+	for _, button := range c.Form.Navigation {
+		actions = append(actions, map[string]any{"tag": "button", "text": map[string]string{"tag": "plain_text", "content": button.Label}, "type": "default", "value": map[string]string{"action_id": c.ActionID, "choice": button.Value}})
+	}
+	actions = append(actions, map[string]any{"tag": "button", "text": map[string]string{"tag": "plain_text", "content": cancelLabel}, "type": "default", "value": map[string]string{"action_id": c.ActionID, "choice": cancelChoice}})
+	return []any{map[string]any{"tag": "form", "name": "new_conversation", "elements": fields}, map[string]any{"tag": "action", "actions": actions}}
 }

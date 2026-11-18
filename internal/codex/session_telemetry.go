@@ -1,144 +1,92 @@
 package codex
 
 import (
-	"bufio"
 	"context"
 	"encoding/json"
 	"errors"
-	"io"
-	"time"
 
 	"im-agent/internal/redact"
 	"im-agent/internal/telemetry"
 )
 
-// LatestSessionTelemetry 只读已核验 session_meta 的日志尾部，不提交或恢复会话。
-// 超出窗口或缺少轮次起点时保持未知，不能沿用上一轮的完成状态。
+// 当前会话状态与最新对话复用同一日志文件、完整行游标和完成核验。
 func (c *Client) LatestSessionTelemetry(ctx context.Context, thread string) (telemetry.Snapshot, string, error) {
-	files, err := c.LiveRolloutFiles(ctx, thread)
-	if err != nil {
-		return telemetry.Snapshot{}, "", err
+	view, found, err := c.observeRollout(ctx, thread)
+	if err == nil && !found {
+		err = errors.New("会话日志暂不可用")
 	}
-	if len(files) == 0 {
-		return telemetry.Snapshot{}, "", errors.New("会话日志暂不可用")
-	}
-	path := files[len(files)-1]
-	file, header, err := c.openLiveRollout(thread, path)
-	if err != nil {
-		return telemetry.Snapshot{}, "", err
-	}
-	defer file.Close()
-	info, err := file.Stat()
-	if err != nil {
-		return telemetry.Snapshot{}, "", err
-	}
-	const window = int64(16 << 20)
-	start := info.Size() - window
-	if start < header {
-		start = header
-	}
-	if _, err = file.Seek(start, io.SeekStart); err != nil {
-		return telemetry.Snapshot{}, "", err
-	}
-	reader := bufio.NewReaderSize(io.LimitReader(file, info.Size()-start), 64<<10)
-	if start > header {
-		// 起点可能在一条记录内部；整条丢弃，不尝试解析残缺 JSON。
-		if _, err = readRolloutLine(reader); err != nil {
-			return telemetry.Snapshot{}, "", err
+	return view.Snapshot, view.UserItemID, err
+}
+
+func applySessionTelemetry(state *telemetry.State, thread, kind string, raw json.RawMessage, at int64) error {
+	if kind == "event_msg" {
+		var event struct {
+			Type   string
+			TurnID string `json:"turn_id"`
+		}
+		if json.Unmarshal(raw, &event) != nil {
+			return errors.New("会话状态事件格式无效")
+		}
+		if event.Type == "task_started" {
+			*state = telemetry.State{MatchedTurn: event.TurnID, CurrentTurn: event.TurnID, CurrentStartedAt: at,
+				Snapshot: telemetry.Snapshot{TurnID: event.TurnID, StartedAt: at, LastActivityAt: at, Activity: "started"}}
+			if event.TurnID == "" {
+				state.Snapshot.Issue = "identity_conflict"
+			}
 		}
 	}
-	var state telemetry.State
-	var lastAt int64
-	for {
-		if err = ctx.Err(); err != nil {
-			return telemetry.Snapshot{}, "", err
-		}
-		raw, readErr := readRolloutLine(reader)
-		if readErr == io.EOF {
-			break
-		} // 正在写入的半行留待下次观察。
-		if readErr != nil {
-			return telemetry.Snapshot{}, "", readErr
-		}
+	if kind == "turn_context" {
 		var row struct {
-			Type      string          `json:"type"`
-			Timestamp string          `json:"timestamp"`
-			Payload   json.RawMessage `json:"payload"`
+			TurnID string `json:"turn_id"`
 		}
-		if json.Unmarshal(raw, &row) != nil {
-			return telemetry.Snapshot{}, "", errors.New("会话状态日志格式无效")
+		if json.Unmarshal(raw, &row) == nil && row.TurnID != "" && row.TurnID != state.MatchedTurn {
+			*state = telemetry.State{Snapshot: telemetry.Snapshot{Issue: "state_invalid", LastActivityAt: at}}
 		}
-		stamp, parseErr := time.Parse(time.RFC3339Nano, row.Timestamp)
-		if parseErr != nil || stamp.UnixMilli() <= 0 || stamp.After(time.Now().Add(5*time.Minute)) {
-			continue
+	}
+	if kind == "response_item" {
+		var item struct{ Type, Role string }
+		if json.Unmarshal(raw, &item) != nil {
+			return errors.New("会话状态消息格式无效")
 		}
-		at := stamp.UnixMilli()
-		if at > lastAt {
-			lastAt = at
-		}
-		if row.Type == "event_msg" {
-			var event struct {
-				Type   string `json:"type"`
-				TurnID string `json:"turn_id"`
+		if item.Type == "message" && item.Role == "user" {
+			message, visible, err := publicUserMessage(raw)
+			if err != nil {
+				return err
 			}
-			if json.Unmarshal(row.Payload, &event) != nil {
-				return telemetry.Snapshot{}, "", errors.New("会话状态事件格式无效")
+			if !visible {
+				return nil
 			}
-			if event.Type == "task_started" {
-				state = telemetry.State{MatchedTurn: event.TurnID, CurrentTurn: event.TurnID, CurrentStartedAt: at,
-					Snapshot: telemetry.Snapshot{TurnID: event.TurnID, StartedAt: at, LastActivityAt: at, Activity: "started"}}
-				if event.TurnID == "" {
-					state.Snapshot.Issue = "identity_conflict"
-				}
-			}
-		}
-		if row.Type == "turn_context" {
-			var contextRow struct {
-				TurnID string `json:"turn_id"`
-			}
-			if json.Unmarshal(row.Payload, &contextRow) == nil && contextRow.TurnID != "" && contextRow.TurnID != state.MatchedTurn {
-				// 新上下文没有对应起点时，不再展示上一轮的完成结果。
-				state = telemetry.State{Snapshot: telemetry.Snapshot{Issue: "state_invalid", LastActivityAt: at}}
-			}
-		}
-		if row.Type == "response_item" && state.MatchedTurn != "" && state.UserItemID == "" {
-			var item struct{ ID, Type, Role string }
-			if json.Unmarshal(row.Payload, &item) == nil && item.Type == "message" && item.Role == "user" {
-				state.UserItemID = item.ID
-			}
-		}
-		if state.MatchedTurn != "" && !state.Halted {
-			if _, err = applyRequestTelemetry(&state, thread, row.Type, row.Payload, at); err != nil {
-				return telemetry.Snapshot{}, "", err
-			}
-		}
-		// 部分提供方在公开消息中保留提供方内部轮次 ID。
-		// 仅展示已核验会话文件中、当前轮次起点之后的公开文字；
-		// 明示会话级来源，不将其用于轮次输出时间、完成判断或操作授权。
-		if row.Type == "response_item" && state.MatchedTurn != "" && !state.Halted && state.Snapshot.EndedAt == 0 && state.MatchedUserCount == 1 {
-			var item struct {
-				ID, Type, Role, Phase string
-				Content               []InputContent
-				Meta                  struct {
-					TurnID string `json:"turn_id"`
-				} `json:"internal_chat_message_metadata_passthrough"`
-			}
-			if json.Unmarshal(row.Payload, &item) == nil && item.ID != "" && item.Type == "message" && item.Role == "assistant" && publicAssistantPhase(item.Phase) {
-				if item.Meta.TurnID != "" && item.Meta.TurnID != state.MatchedTurn {
-					if text, supported := exactReplyText(item.Content); supported && text != "" {
-						state.Snapshot.Preview = publicPreview(redact.New().Text(text))
-						state.Snapshot.PreviewAt = at
-						state.Snapshot.PreviewScope = "session"
-					}
-				} else if state.Snapshot.PreviewAt == at {
-					state.Snapshot.PreviewScope = ""
-				}
+			// 会话视图允许本轮追加输入；单条 IM 请求仍使用自身的严格观察器。
+			if state.MatchedTurn != "" {
+				state.UserItemID = message.ID
+				state.MatchedUserCount = 0
 			}
 		}
 	}
-	if state.Snapshot.StartedAt == 0 {
-		state.Snapshot = telemetry.Snapshot{Issue: "state_invalid", LastActivityAt: lastAt}
+	if state.MatchedTurn != "" && !state.Halted {
+		if _, err := applyRequestTelemetry(state, thread, kind, raw, at); err != nil {
+			return err
+		}
 	}
-	state.Snapshot.ObservedAt = time.Now().UnixMilli()
-	return state.Snapshot, state.UserItemID, nil
+	if kind == "response_item" && state.MatchedTurn != "" && !state.Halted && state.Snapshot.EndedAt == 0 && state.MatchedUserCount == 1 {
+		var item struct {
+			ID, Type, Role, Phase string
+			Content               []InputContent
+			Meta                  struct {
+				TurnID string `json:"turn_id"`
+			} `json:"internal_chat_message_metadata_passthrough"`
+		}
+		if json.Unmarshal(raw, &item) == nil && item.ID != "" && item.Type == "message" && item.Role == "assistant" && publicAssistantPhase(item.Phase) {
+			if item.Meta.TurnID != "" && item.Meta.TurnID != state.MatchedTurn {
+				if text, ok := exactReplyText(item.Content); ok {
+					state.Snapshot.Preview = publicPreview(redact.New().Text(text))
+					state.Snapshot.PreviewAt = at
+					state.Snapshot.PreviewScope = "session"
+				}
+			} else if state.Snapshot.PreviewAt == at {
+				state.Snapshot.PreviewScope = ""
+			}
+		}
+	}
+	return nil
 }

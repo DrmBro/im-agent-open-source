@@ -3,6 +3,7 @@ package bridge
 import (
 	"context"
 	"errors"
+	"sync"
 	"time"
 
 	"im-agent/internal/codex"
@@ -21,7 +22,7 @@ func (b *Bridge) syncPresentations(ctx context.Context) {
 		if e := b.store.EnsurePresentations(); e != nil {
 			b.log.Warn("准备群名与历史补齐记录失败")
 		} else {
-			rows, e := b.store.Presentations(false)
+			rows, e := b.store.ActivePresentations()
 			if e != nil {
 				b.log.Warn("读取群名与历史补齐任务失败")
 			} else {
@@ -53,6 +54,14 @@ func (b *Bridge) activePresentation(thread string) (store.Session, error) {
 	return s, nil
 }
 func (b *Bridge) presentOne(ctx context.Context, p store.Presentation) {
+	lock := b.presentationLock(p.ThreadID)
+	lock.Lock()
+	defer lock.Unlock()
+	fresh, readErr := b.store.Presentation(p.ThreadID)
+	if readErr != nil {
+		return
+	}
+	p = fresh
 	s, e := b.activePresentation(p.ThreadID)
 	if e != nil {
 		return
@@ -74,7 +83,7 @@ func (b *Bridge) presentOne(ctx context.Context, p store.Presentation) {
 
 	// 每轮独立核对真实标题，既有群和后续改名都能同步，不依赖历史读取成功。
 	// 只改变展示任务，绝不创建替代群、改变线程/目录或重置历史发送状态。
-	metadata, readErr := b.codex.ReadMetadata(ctx, p.ThreadID)
+	metadata, readErr := b.engineForThread(p.ThreadID).ReadMetadata(ctx, p.ThreadID)
 	if readErr == nil && metadata.ID != p.ThreadID {
 		readErr = errors.New("返回的会话ID与目标不一致")
 	}
@@ -110,7 +119,7 @@ func (b *Bridge) presentOne(ctx context.Context, p store.Presentation) {
 		}
 	}
 	if (p.HistoryState == "pending" && p.Payload == "") || p.HistoryState == "sent" || p.HistoryState == "empty" {
-		thread, messages, readErr := b.codex.RecentConversation(ctx, p.ThreadID)
+		thread, messages, readErr := b.engineForThread(p.ThreadID).RecentConversation(ctx, p.ThreadID)
 		if readErr != nil {
 			fail("history", "读取 Codex 历史失败："+diagnostics.Error(readErr), false)
 			return
@@ -196,4 +205,9 @@ func presentationSourceFromMessages(messages []codex.HistoryMessage) store.Prese
 		return store.PresentationSource{UserItemID: messages[0].ID, AssistantItemID: messages[1].ID}
 	}
 	return store.PresentationSource{}
+}
+
+func (b *Bridge) presentationLock(thread string) *sync.Mutex {
+	value, _ := b.presentationLocks.LoadOrStore(thread, &sync.Mutex{})
+	return value.(*sync.Mutex)
 }

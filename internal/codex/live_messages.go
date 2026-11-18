@@ -12,6 +12,8 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+
+	"im-agent/internal/diagnostics"
 )
 
 type LiveMessage struct {
@@ -32,19 +34,21 @@ func liveIssue(kind string, raw []byte, offset int64) LiveMessage {
 }
 
 // 超限完整行仅记录长度和摘要，不保留正文；若仍在写入则等待换行，不跳过半行。
-func oversizedLiveIssue(ctx context.Context, file *os.File, offset int64) (LiveMessage, int64, error) {
+func oversizedLiveIssue(ctx context.Context, file *os.File, offset int64, tailOut ...*[]byte) (LiveMessage, int64, error) {
 	if _, err := file.Seek(offset, io.SeekStart); err != nil {
 		return LiveMessage{}, offset, err
 	}
 	reader := bufio.NewReaderSize(file, 64<<10)
 	hash := sha256.New()
 	var length int64
+	var tail []byte
 	for {
 		if err := ctx.Err(); err != nil {
 			return LiveMessage{}, offset, err
 		}
 		chunk, err := reader.ReadSlice('\n')
 		length += int64(len(chunk))
+		tail = appendCheckpointTail(tail, chunk)
 		if length > 512<<20 {
 			return LiveMessage{}, offset, errors.New("单条日志超过隔离上限，需人工核对原始日志")
 		}
@@ -57,13 +61,16 @@ func oversizedLiveIssue(ctx context.Context, file *os.File, offset int64) (LiveM
 		if err != nil {
 			return LiveMessage{}, offset, err
 		}
+		if len(tailOut) > 0 {
+			*tailOut[0] = tail
+		}
 		return LiveMessage{Offset: offset, Issue: &LiveReadIssue{Kind: "oversized_record",
 			Fingerprint: hex.EncodeToString(hash.Sum(nil)), Length: length}}, offset + length, nil
 	}
 }
 
-// 日志原位重写后旧游标可能落在完整 JSON 记录中间。仅回退到同一行的真实起点，
-// 后续原始 item_id 仍由投递账本核对，不按正文重发已送达消息。
+// 定位游标所在完整记录的真实起点；增量投递要求它与原游标一致，
+// 边界变化时保留进度待核对，不回放首次启用前未入账的历史。
 func alignLiveOffset(f *os.File, header, offset int64) (int64, error) {
 	if offset == header {
 		return offset, nil
@@ -191,6 +198,17 @@ func (c *Client) LiveBaseline(ctx context.Context, thread string) (string, int64
 
 // 持久化偏移由上层在消息入队的同一事务中推进；这里只读，不写 Codex 文件。
 func (c *Client) ReadLiveMessages(ctx context.Context, thread, path string, offset int64) ([]LiveMessage, int64, error) {
+	return c.readLiveMessages(ctx, thread, path, offset, "", nil)
+}
+
+// 检查点来自本次实际消费的原始字节；在同一个文件句柄内核对读取前后边界。
+func (c *Client) ReadLiveMessagesChecked(ctx context.Context, thread, path string, offset int64, expected string) ([]LiveMessage, int64, string, error) {
+	var checkpoint string
+	messages, next, err := c.readLiveMessages(ctx, thread, path, offset, expected, &checkpoint)
+	return messages, next, checkpoint, err
+}
+
+func (c *Client) readLiveMessages(ctx context.Context, thread, path string, offset int64, expected string, checkpoint *string) ([]LiveMessage, int64, error) {
 	f, header, err := c.openLiveRollout(thread, path)
 	if err != nil {
 		return nil, offset, err
@@ -203,25 +221,38 @@ func (c *Client) ReadLiveMessages(ctx context.Context, thread, path string, offs
 	if offset < header {
 		return nil, offset, errors.New("实时日志游标早于会话元数据，未猜测位置")
 	}
-	// 同一会话日志截短后从已核验的元数据边界重新扫描；持久化 item_id
-	// 与原消息分片账本会跳过已经投递的条目，不能从旧字节位置继续读。
-	rewound := offset > info.Size()
-	aligned := header
-	if !rewound {
-		aligned, err = alignLiveOffset(f, header, offset)
+	if offset > info.Size() {
+		return nil, offset, diagnostics.UserError("日志已截短，原同步边界需核对；保留游标，未回放启用前历史")
 	}
+	aligned, err := alignLiveOffset(f, header, offset)
 	if err != nil {
 		return nil, offset, err
 	}
+	if aligned != offset {
+		return nil, offset, diagnostics.UserError("日志消费边界已改写，保留游标等待核对")
+	}
+	initialTail, err := readCheckpointTail(f, offset)
+	if err != nil {
+		return nil, offset, err
+	}
+	if expected != "" && storeHash(string(initialTail)) != expected {
+		return nil, offset, diagnostics.UserError("已读取日志内容发生变化，保留游标等待核对；已有入账消息继续投递")
+	}
+	tail := append([]byte(nil), initialTail...)
 	if _, err = f.Seek(aligned, io.SeekStart); err != nil {
 		return nil, offset, err
 	}
 	reader := bufio.NewReaderSize(f, 64<<10)
 	next := aligned
 	var out []LiveMessage
-	for lines := 0; lines < 1000 && next-offset < 8<<20 && len(out) < 50; lines++ {
+	for lines := 0; lines < 1000 && next-aligned < 8<<20 && len(out) < 50; lines++ {
 		if ctx.Err() != nil {
-			return nil, offset, ctx.Err()
+			if next == aligned {
+				return nil, offset, ctx.Err()
+			}
+			// 完整记录已读取时保留本批进度；仍经下方文件身份和双边界核验。
+			// 完成事件核验超时已记为待补齐，不能每轮丢弃同一批而永久卡住。
+			break
 		}
 		start := next
 		raw, err := readRolloutLine(reader)
@@ -229,7 +260,7 @@ func (c *Client) ReadLiveMessages(ctx context.Context, thread, path string, offs
 			break
 		}
 		if errors.Is(err, errRolloutLineTooLarge) {
-			issue, end, scanErr := oversizedLiveIssue(ctx, f, start)
+			issue, end, scanErr := oversizedLiveIssue(ctx, f, start, &tail)
 			if scanErr == io.EOF {
 				break // 仍在写入的超限半行不能先隔离。
 			}
@@ -248,6 +279,7 @@ func (c *Client) ReadLiveMessages(ctx context.Context, thread, path string, offs
 			return nil, offset, err
 		}
 		next += int64(len(raw))
+		tail = appendCheckpointTail(tail, raw)
 		var rec struct {
 			Type    string          `json:"type"`
 			Payload json.RawMessage `json:"payload"`
@@ -276,42 +308,36 @@ func (c *Client) ReadLiveMessages(ctx context.Context, thread, path string, offs
 		if rec.Type != "response_item" {
 			continue
 		}
-		var item struct {
-			Type, Role, ID, Phase, Status string
-			Content                       []InputContent
-		}
-		if json.Unmarshal(rec.Payload, &item) != nil {
-			out = append(out, liveIssue("invalid_item", raw, start))
-			continue
-		}
-		if item.Type != "message" || (item.Role != "user" && item.Role != "assistant") {
-			continue
-		}
-		// 助手正文只在对应完成事件核验后发出；过程由遥测进入小卡片。
-		if item.Role == "assistant" {
-			continue
-		}
-		parts := []string{}
-		for _, p := range item.Content {
-			switch p.Type {
-			case "input_text", "output_text", "text":
-				parts = append(parts, p.Text)
-			case "input_image", "image", "localImage":
-				parts = append(parts, "[图片，附件未同步]")
+		message, visible, parseErr := publicUserMessage(rec.Payload)
+		if parseErr != nil {
+			kind := "invalid_item"
+			if errors.Is(parseErr, errMissingPublicItemID) {
+				kind = "missing_item_id"
 			}
-		}
-		text := strings.TrimSpace(strings.Join(parts, "\n"))
-		if text == "" || item.Role == "user" && !visibleUserText(text) {
+			out = append(out, liveIssue(kind, raw, start))
 			continue
 		}
-		if item.ID == "" {
-			out = append(out, liveIssue("missing_item_id", raw, start))
-			continue
+		if visible {
+			out = append(out, LiveMessage{HistoryMessage: message, Offset: start})
 		}
-		out = append(out, LiveMessage{HistoryMessage: HistoryMessage{ID: item.ID, Role: item.Role, Text: text}, Offset: start})
 	}
-	if next < offset && !rewound {
-		return nil, offset, nil
+	currentTail, err := readCheckpointTail(f, next)
+	if err != nil {
+		return nil, offset, err
+	}
+	oldBoundary, err := readCheckpointTail(f, offset)
+	if err != nil {
+		return nil, offset, err
+	}
+	currentInfo, err := os.Stat(path)
+	if err != nil {
+		return nil, offset, err
+	}
+	if !os.SameFile(info, currentInfo) || !bytes.Equal(currentTail, tail) || !bytes.Equal(oldBoundary, initialTail) {
+		return nil, offset, diagnostics.UserError("日志在读取期间发生改写，本批未入账，等待重新核对")
+	}
+	if checkpoint != nil {
+		*checkpoint = storeHash(string(tail))
 	}
 	return out, next, nil
 }
@@ -324,4 +350,27 @@ func DesktopInputForms(text string) (string, string) {
 		rendered = strings.ReplaceAll(original, "_", "\\_")
 	}
 	return original, rendered
+}
+
+func appendCheckpointTail(tail, raw []byte) []byte {
+	if len(raw) >= 256 {
+		return append(tail[:0], raw[len(raw)-256:]...)
+	}
+	tail = append(tail, raw...)
+	if len(tail) > 256 {
+		tail = append(tail[:0], tail[len(tail)-256:]...)
+	}
+	return tail
+}
+func readCheckpointTail(file *os.File, offset int64) ([]byte, error) {
+	start := offset - 256
+	if start < 0 {
+		start = 0
+	}
+	if offset < 0 {
+		return nil, errors.New("检查点位置无效")
+	}
+	raw := make([]byte, offset-start)
+	_, err := file.ReadAt(raw, start)
+	return raw, err
 }

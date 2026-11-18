@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"im-agent/internal/codex"
+	"im-agent/internal/config"
 	"im-agent/internal/diagnostics"
 	"im-agent/internal/im"
 	"im-agent/internal/store"
@@ -25,7 +26,7 @@ func (b *Bridge) ensureLiveCursor(ctx context.Context, s store.Session) (store.M
 	if !errors.Is(err, sql.ErrNoRows) {
 		return c, err
 	}
-	path, offset, err := b.codex.LiveBaseline(ctx, s.ThreadID)
+	path, offset, err := b.engineForThread(s.ThreadID).LiveBaseline(ctx, s.ThreadID)
 	if err != nil {
 		return c, err
 	}
@@ -35,13 +36,16 @@ func (b *Bridge) ensureLiveCursor(ctx context.Context, s store.Session) (store.M
 	return b.store.MirrorCursor(s.ThreadID)
 }
 func (b *Bridge) registerLiveOrigin(ctx context.Context, s store.Session, msg im.Message, path string, offset int64) error {
-	if !s.Managed {
+	if !s.Managed && !config.UsesDirectCodex(s.Address.Channel) {
 		return nil
 	}
 	lock := b.liveLock(s.ThreadID)
 	lock.Lock()
 	defer lock.Unlock()
 	if path == "" {
+		if config.UsesDirectCodex(s.Address.Channel) {
+			return b.store.RegisterNativeSubmissionIntent(s, msg.ID)
+		}
 		return diagnostics.UserError("尚未找到会话日志，无法登记消息来源；本条未提交")
 	}
 	if _, err := b.ensureLiveCursor(ctx, s); err != nil {
@@ -56,7 +60,7 @@ func (b *Bridge) markdownEnabled(s store.Session) bool {
 	return ok
 }
 
-func (b *Bridge) mirrorEntry(message codex.HistoryMessage, offset int64, markdown bool) store.MirrorEntry {
+func (b *Bridge) mirrorEntry(message codex.HistoryMessage, offset int64, markdown bool, personal ...bool) store.MirrorEntry {
 	body := message.Text
 	if message.Role == "user" {
 		body = codex.UserMessageTextForDisplay(body)
@@ -96,7 +100,11 @@ func (b *Bridge) mirrorEntry(message codex.HistoryMessage, offset int64, markdow
 		if message.Role == "assistant" && markdown {
 			separator = "\n\n"
 		}
-		parts = append(parts, title+separator+chunk)
+		if len(personal) > 0 && personal[0] {
+			parts = append(parts, chunk)
+		} else {
+			parts = append(parts, title+separator+chunk)
+		}
 	}
 	entry := store.MirrorEntry{ItemID: message.ID, Role: message.Role, Fingerprint: store.Hash(strings.TrimSpace(message.Text)), Offset: offset, Parts: parts}
 	if message.Role == "user" {
@@ -110,6 +118,9 @@ func (b *Bridge) mirrorEntry(message codex.HistoryMessage, offset int64, markdow
 
 // 调用者持有同线程锁；只把增量消息写入账本，不在此处发送网络请求。
 func (b *Bridge) ingestLive(ctx context.Context, s store.Session) error {
+	if config.IsPersonalChannel(s.Address.Channel) {
+		return nil
+	}
 	// 只在当前会话没有历史同步游标时建立基线，不回填启用前的旧文件。
 	_, oldErr := b.store.MirrorCursor(s.ThreadID)
 	initial := errors.Is(oldErr, sql.ErrNoRows)
@@ -120,7 +131,7 @@ func (b *Bridge) ingestLive(ctx context.Context, s store.Session) error {
 	if err != nil {
 		return err
 	}
-	files, scanErr := b.codex.LiveRolloutFiles(ctx, s.ThreadID)
+	files, scanErr := b.engineForThread(s.ThreadID).LiveRolloutFiles(ctx, s.ThreadID)
 	if len(files) == 0 && scanErr != nil {
 		return scanErr
 	}
@@ -138,12 +149,15 @@ func (b *Bridge) ingestLive(ctx context.Context, s store.Session) error {
 		scanErr = diagnostics.UserError("已记录的会话日志缺失，旧文件尾部待核对；后续文件继续同步")
 	}
 	for _, path := range files {
-		header, size, err := b.codex.LiveRolloutInfo(ctx, s.ThreadID, path)
+		header, size, err := b.engineForThread(s.ThreadID).LiveRolloutInfo(ctx, s.ThreadID, path)
 		if err != nil {
 			if scanErr == nil {
 				scanErr = err
 			}
 			continue
+		}
+		if err = b.store.RecordSyncSource(s.ThreadID, path, size); err != nil {
+			return err
 		}
 		start := header
 		if initial && path == baseline.Path {
@@ -163,14 +177,18 @@ func (b *Bridge) ingestLive(ctx context.Context, s store.Session) error {
 			continue
 		}
 		for batch := 0; batch < 32; batch++ {
-			messages, next, readErr := b.codex.ReadLiveMessages(ctx, s.ThreadID, cursor.Path, cursor.Offset)
+			expected, checkpointErr := b.store.MirrorCheckpoint(s.ThreadID, cursor.Path, cursor.Offset)
+			if checkpointErr != nil {
+				return checkpointErr
+			}
+			messages, next, checkpoint, readErr := b.engineForThread(s.ThreadID).ReadLiveMessagesChecked(ctx, s.ThreadID, cursor.Path, cursor.Offset, expected)
 			if readErr != nil {
 				if scanErr == nil {
 					scanErr = readErr
 				}
 				break
 			}
-			if next == cursor.Offset {
+			if next == cursor.Offset && len(messages) == 0 && expected != "" {
 				break
 			}
 			entries := make([]store.MirrorEntry, 0, len(messages))
@@ -183,7 +201,8 @@ func (b *Bridge) ingestLive(ctx context.Context, s store.Session) error {
 				}
 				entries = append(entries, b.mirrorEntryForThread(s.ThreadID, message.HistoryMessage, message.Offset, b.markdownEnabled(s)))
 			}
-			if err = b.store.CommitMirrorBatch(s.ThreadID, cursor, next, entries, issues); err != nil {
+
+			if err = b.store.CommitMirrorBatch(s.ThreadID, cursor, next, entries, issues, checkpoint); err != nil {
 				return err
 			}
 			cursor.Offset = next
@@ -199,7 +218,16 @@ func (b *Bridge) flushLive(ctx context.Context, s store.Session) error {
 	if adapter == nil {
 		return diagnostics.UserError("实时消息的 IM 连接未配置")
 	}
-	parts, err := b.store.MirrorParts(s.ThreadID)
+	if adapter.Capabilities().PersonalInbox {
+		if err := b.store.RefreshPersonalDelivery(s.ThreadID); err != nil {
+			return err
+		}
+		if err := b.preparePersonalReviews(ctx, s); err != nil {
+			return err
+		}
+		defer b.store.RefreshPersonalDelivery(s.ThreadID)
+	}
+	parts, err := b.store.MirrorParts(s.ThreadID, adapter.Capabilities().PersonalInbox)
 	if err != nil {
 		return err
 	}
@@ -222,6 +250,15 @@ func (b *Bridge) flushLive(ctx context.Context, s store.Session) error {
 		if part.State != "pending" || part.NextAttempt > time.Now().Unix() {
 			continue // 已在账本中隔离或重试等待，不影响其它消息。
 		}
+		if adapter.Capabilities().PersonalInbox {
+			allowed, err := b.store.PersonalPartApproved(s.ThreadID, part.ItemID, b.personalAutoPeers(s))
+			if err != nil {
+				return err
+			}
+			if !allowed {
+				continue
+			}
+		}
 		claimed, err := b.store.ClaimMirrorPart(part)
 		if err != nil {
 			return err
@@ -230,6 +267,12 @@ func (b *Bridge) flushLive(ctx context.Context, s store.Session) error {
 			return diagnostics.UserError("实时消息已被其他投递流程领取，等待确认")
 		}
 		key := store.Hash(s.Address.Key() + "\x00" + s.ThreadID + "\x00" + part.ItemID + fmt.Sprintf(":live:%d", part.Index))[:32]
+		if adapter.Capabilities().PersonalInbox {
+			if part.Role != "assistant" {
+				return diagnostics.UserError("个人渠道不转发用户历史消息")
+			}
+			key = "personal-reply:" + key
+		}
 		var id string
 		var sendErr error
 		if markdown, ok := adapter.(im.MarkdownAdapter); ok && part.Role == "assistant" {
@@ -263,6 +306,11 @@ func (b *Bridge) flushLive(ctx context.Context, s store.Session) error {
 		if err = b.store.MirrorPartSent(part, id); err != nil {
 			return err
 		}
+		if adapter.Capabilities().PersonalInbox && !personalDirect(s.Address) {
+			if e := b.store.RecordGroupReplyReference(s, part.ItemID, id); e != nil {
+				b.log.Warn("群回复已发送，引用关联保存失败；不重发消息")
+			}
+		}
 	}
 	return firstFailure
 }
@@ -271,14 +319,32 @@ func (b *Bridge) syncLiveThread(ctx context.Context, s store.Session) error {
 	lock.Lock()
 	defer lock.Unlock()
 	defer b.reconcileRequestReplies(s)
-	ingestErr := b.ingestLive(ctx, s)
-	if ctx.Err() != nil {
-		return ctx.Err()
-	}
-	if err := b.flushLive(ctx, s); err != nil {
+	// 各阶段独立预算；读取或旧记录恢复失败时，已入账消息仍获得投递机会。
+	readCtx, stopRead := context.WithTimeout(ctx, 10*time.Second)
+	readErr := b.ingestLive(readCtx, s)
+	stopRead()
+	if err := b.store.RecordSyncStage(s.ThreadID, "read", syncErrorDetail(readErr)); err != nil {
 		return err
 	}
-	return ingestErr
+	writeCtx, stopWrite := context.WithTimeout(ctx, 20*time.Second)
+	writeErr := b.flushLive(writeCtx, s)
+	stopWrite()
+	if err := b.store.RecordSyncStage(s.ThreadID, "delivery", syncErrorDetail(writeErr)); err != nil {
+		return err
+	}
+	recoveryCtx, stopRecovery := context.WithTimeout(ctx, 3*time.Second)
+	recoveryErr := b.recoverLiveCompletions(recoveryCtx, s)
+	stopRecovery()
+	if err := b.store.RecordSyncStage(s.ThreadID, "recovery", syncErrorDetail(recoveryErr)); err != nil {
+		return err
+	}
+	if readErr != nil {
+		return readErr
+	}
+	if writeErr != nil {
+		return writeErr
+	}
+	return recoveryErr
 }
 func (b *Bridge) deliverLiveReplies(ctx context.Context, s store.Session, replies []codex.HistoryMessage) error {
 	lock := b.liveLock(s.ThreadID)
@@ -288,11 +354,14 @@ func (b *Bridge) deliverLiveReplies(ctx context.Context, s store.Session, replie
 	if err := ctx.Err(); err != nil {
 		return err
 	}
+	if config.IsPersonalChannel(s.Address.Channel) {
+		return b.flushLive(ctx, s)
+	}
 	for _, reply := range replies {
 		if reply.ID == "" {
 			return diagnostics.UserError("助手回复缺少消息 ID，无法安全关联投递；不会自动重发任务")
 		}
-		if err := b.store.EnqueueMirrorReply(s.ThreadID, b.mirrorEntry(reply, 0, b.markdownEnabled(s))); err != nil {
+		if err := b.store.EnqueueMirrorReply(s.ThreadID, b.mirrorEntry(reply, 0, b.markdownEnabled(s), config.IsPersonalChannel(s.Address.Channel))); err != nil {
 			return err
 		}
 	}
@@ -310,6 +379,13 @@ func (b *Bridge) deliverLiveReplies(ctx context.Context, s store.Session, replie
 	}
 	return nil
 }
+func syncErrorDetail(err error) string {
+	if err == nil {
+		return ""
+	}
+	return diagnostics.Error(err)
+}
+
 func (b *Bridge) syncLiveMessages(ctx context.Context) {
 	tick := time.NewTicker(3 * time.Second)
 	defer tick.Stop()
@@ -318,41 +394,50 @@ func (b *Bridge) syncLiveMessages(ctx context.Context) {
 			return
 		}
 		sessions, err := b.store.LiveMirrorSessions()
-		failure := ""
-		failed := 0
-		ambiguous := 0
-		if err != nil {
-			failure = "读取实时同步会话失败：" + diagnostics.Error(err)
-			failed = 1
-		} else {
+		if err == nil {
+			jobs := make(chan store.Session)
+			var workers sync.WaitGroup
+			for n := 0; n < 3; n++ {
+				workers.Add(1)
+				go func() {
+					defer workers.Done()
+					for s := range jobs {
+						op, cancel := context.WithTimeout(ctx, 35*time.Second)
+						_ = b.syncLiveThread(op, s)
+						cancel()
+					}
+				}()
+			}
 			for _, s := range sessions {
 				if ctx.Err() != nil {
-					return
+					break
 				}
-				op, cancel := context.WithTimeout(ctx, 25*time.Second)
-				err = b.syncLiveThread(op, s)
-				cancel()
-				if err != nil {
-					failed++
-					failure = "会话 " + s.ThreadID + "：" + diagnostics.Error(err)
-				}
-				if issues, issueErr := b.store.MirrorOriginIssueCount(s.ThreadID); issueErr == nil {
-					ambiguous += issues
-				}
-				if issues, issueErr := b.store.MirrorReadIssueCount(s.ThreadID); issueErr == nil && issues > 0 {
-					failed++
-					failure = fmt.Sprintf("会话日志有 %d 条无法安全解析的记录已留痕隔离；后续消息继续同步，需人工核对原记录", issues)
+				jobs <- s
+			}
+			close(jobs)
+			workers.Wait()
+		}
+		rows, healthErr := b.store.SyncHealth()
+		b.diagMu.Lock()
+		b.diag.SyncCheckedAt = time.Now().Unix()
+		if err != nil || healthErr != nil {
+			b.diag.LivePhase = "degraded"
+			b.diag.LiveSync = "读取同步任务或诊断账本失败，等待下一轮重试"
+		} else {
+			b.diag.Sessions = rows
+			attention, pending, unknown := 0, 0, 0
+			for _, r := range rows {
+				pending += r.Pending
+				unknown += r.Unknown
+				if r.ReadAt == 0 || time.Now().Unix()-r.ReadAt > 90 || r.ReadError != "" || r.DeliveryError != "" || r.RecoveryError != "" || r.Unknown > 0 || r.ReadIssues > 0 || r.HistoryError != "" {
+					attention++
 				}
 			}
-		}
-		b.diagMu.Lock()
-		if failed > 0 {
-			b.diag.LiveSync = "逐条同步有 " + fmt.Sprint(failed) + " 个会话待处理；" + failure
-		} else {
-			b.diag.LiveSync = "逐条同步运行中；新消息追加到话题底部，历史卡片独立更新"
-		}
-		if ambiguous > 0 {
-			b.diag.LiveSync += fmt.Sprintf("；%d 条用户消息已独立入账，飞书请求归属待核对；实际送达以分片回执为准（未猜测或重放）", ambiguous)
+			b.diag.LivePhase = "running"
+			if attention > 0 {
+				b.diag.LivePhase = "degraded"
+			}
+			b.diag.LiveSync = fmt.Sprintf("%d 个会话；%d 个需核对；待发送 %d 个片段，送达不确定 %d 个片段。详细读取和投递进度见会话同步页。", len(rows), attention, pending, unknown)
 		}
 		b.diagMu.Unlock()
 		select {
@@ -375,4 +460,44 @@ func (b *Bridge) ResolveDelivery(r store.DeliveryResolution) error {
 		b.reconcileRequestReplies(s)
 	}
 	return nil
+}
+
+func (b *Bridge) recoverLiveCompletions(ctx context.Context, s store.Session) error {
+	items, err := b.store.PendingCompletionRecoveries(s.ThreadID)
+	if err != nil {
+		return err
+	}
+	var firstFailure error
+	for _, item := range items {
+		if ctx.Err() != nil {
+			return ctx.Err()
+		}
+		replies, readErr := b.engineForThread(s.ThreadID).RecoverLiveCompletion(ctx, s.ThreadID, item.Path, item.Offset, item.Length, item.Fingerprint)
+		if ctx.Err() != nil {
+			// 已尝试的慢记录也必须让出位置，不能每轮耗尽预算后仍排在队首。
+			if err = b.store.RetryCompletionRecovery(item, diagnostics.Error(ctx.Err())); err != nil {
+				return err
+			}
+			return ctx.Err()
+		}
+		if readErr != nil && !codex.CompletionEvidenceRejected(readErr) {
+			if err = b.store.RetryCompletionRecovery(item, diagnostics.Error(readErr)); err != nil {
+				return err
+			}
+			if firstFailure == nil {
+				firstFailure = readErr
+			}
+			continue
+		}
+		var entries []store.MirrorEntry
+		if readErr == nil {
+			for _, reply := range replies {
+				entries = append(entries, b.mirrorEntryForThread(s.ThreadID, reply.HistoryMessage, reply.Offset, b.markdownEnabled(s)))
+			}
+		}
+		if err = b.store.SaveCompletionRecovery(item, entries, readErr == nil); err != nil {
+			return err
+		}
+	}
+	return firstFailure
 }

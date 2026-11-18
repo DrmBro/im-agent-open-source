@@ -17,25 +17,34 @@ type ThreadEvent struct {
 
 func DecodeThreadEvent(n Notice) (ThreadEvent, bool) {
 	var p struct {
-		ThreadID string `json:"threadId"`
-		TurnID   string `json:"turnId"`
-		ItemID   string `json:"itemId"`
-		Delta    string `json:"delta"`
-		Message  string `json:"message"`
-		Status   string `json:"status"`
-		Turn     Turn   `json:"turn"`
-		Item     Item   `json:"item"`
+		ThreadID       string `json:"threadId"`
+		ThreadIDLegacy string `json:"thread_id"`
+		TurnIDLegacy   string `json:"turn_id"`
+		ItemIDLegacy   string `json:"item_id"`
+		TurnID         string `json:"turnId"`
+		ItemID         string `json:"itemId"`
+		Delta          string `json:"delta"`
+		Message        string `json:"message"`
+		Status         string `json:"status"`
+		Turn           Turn   `json:"turn"`
+		Item           Item   `json:"item"`
 	}
 	if json.Unmarshal(n.Params, &p) != nil {
 		return ThreadEvent{}, false
 	}
-	event := ThreadEvent{ThreadID: p.ThreadID, TurnID: p.TurnID, ItemID: p.ItemID, Raw: n.Params}
-	if event.TurnID == "" {
-		event.TurnID = p.Turn.ID
+	thread, valid := protocolIdentity(p.ThreadID, p.ThreadIDLegacy)
+	if !valid {
+		return ThreadEvent{}, false
 	}
-	if event.ItemID == "" {
-		event.ItemID = p.Item.ID
+	turn, valid := protocolIdentity(p.Turn.ID, p.TurnID, p.TurnIDLegacy)
+	if !valid {
+		return ThreadEvent{}, false
 	}
+	item, valid := protocolIdentity(p.Item.ID, p.ItemID, p.ItemIDLegacy)
+	if !valid {
+		return ThreadEvent{}, false
+	}
+	event := ThreadEvent{ThreadID: thread, TurnID: turn, ItemID: item, Raw: n.Params}
 	switch n.Method {
 	case "item/agentMessage/delta":
 		event.Kind = "text_delta"

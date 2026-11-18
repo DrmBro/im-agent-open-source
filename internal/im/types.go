@@ -26,11 +26,30 @@ func (a Address) IsTopic() bool   { return a.TopicID != "" }
 func (a Address) Parent() Address { a.TopicID = ""; a.RootMessageID = ""; return a }
 
 type Message struct {
-	Attachments      []Attachment
-	Address          Address
-	ID, UserID, Text string
-	IsDirect         bool
+	Followup             bool   `json:"Followup,omitempty"`
+	SelfMessage          bool   `json:"SelfMessage,omitempty"`
+	FollowupTarget       string `json:"FollowupTarget,omitempty"`
+	PlatformID           string `json:"PlatformID,omitempty"`
+	QuotedID             string `json:"QuotedID,omitempty"`
+	QuotedConversationID string `json:"QuotedConversationID,omitempty"`
+	ConversationID       string `json:"ConversationID,omitempty"`
+	UserName             string `json:"UserName,omitempty"`
+	Attachments          []Attachment
+	Address              Address
+	ID, UserID, Text     string
+	IsDirect             bool
 }
+
+// InboundScopeAdapter 校验渠道自身已经认证的收件来源及当前监听范围。
+type InboundScopeAdapter interface{ AcceptsMessage(Message) bool }
+
+type GroupFollowup struct {
+	Address Address
+	Until   int64
+}
+
+// 只同步短期群订阅，不更改平台群、成员或全局监听范围。
+type GroupFollowupAdapter interface{ SetGroupFollowups([]GroupFollowup) }
 type Interaction struct {
 	Fields                              map[string]string `json:"fields,omitempty"`
 	Address                             Address
@@ -51,7 +70,10 @@ type Selection struct {
 	Placeholder string
 	Options     []Button
 }
-type Capabilities struct{ CreateConversation, UpdateCard, InteractiveCards, StreamCards, CloseConversation, RenameConversation, Topics, SelectMenus bool }
+type Capabilities struct {
+	PersonalInbox                                                                                                             bool
+	CreateConversation, UpdateCard, InteractiveCards, StreamCards, CloseConversation, RenameConversation, Topics, SelectMenus bool
+}
 type Conversation struct {
 	Name           string
 	Members        []string
@@ -145,8 +167,10 @@ type FileAdapter interface {
 
 // Form 描述渠道无关的创建输入，字段值必须在服务端按快照重新校验。
 type Form struct {
-	Fields      []FormField
-	SubmitLabel string
+	Navigation                              []Button
+	Fields                                  []FormField
+	SubmitLabel                             string
+	SubmitChoice, CancelLabel, CancelChoice string
 }
 type FormField struct {
 	Name, Label, Placeholder, Default string
@@ -193,3 +217,13 @@ type AttachmentReadError struct {
 
 func (e *AttachmentReadError) Error() string { return e.Cause.Error() }
 func (e *AttachmentReadError) Unwrap() error { return e.Cause }
+
+// ImageMarkdownAdapter 只读取桥接已核验并制作的图片副本。
+type ImageMarkdownAdapter interface {
+	SendImageMarkdown(context.Context, Address, string, string, string) (string, error)
+}
+
+// DeliveryRejected 是平台明确拒绝提交；与可能已送达的网络超时区分。
+type DeliveryRejected struct{ Code string }
+
+func (e *DeliveryRejected) Error() string { return "平台拒绝消息参数，未发送" }

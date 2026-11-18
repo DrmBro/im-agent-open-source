@@ -16,6 +16,9 @@ type desktopProgress struct {
 // 每请求仅一个观察者、一格快照；不是模型执行队列，不会提交或重放问题。
 // 连续进度过快时合并为最新快照，回调不等待数据库、网络或观察者。
 func (b *Bridge) observeDesktopProgress(parent context.Context, adapter im.Adapter, session store.Session, msg im.Message) (func(string, string), func()) {
+	if adapter.Capabilities().PersonalInbox {
+		return func(string, string) {}, func() {}
+	}
 	ctx, cancel := context.WithCancel(parent)
 	updates := make(chan desktopProgress, 1)
 	done := make(chan struct{})

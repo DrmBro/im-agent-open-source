@@ -2,6 +2,7 @@ package codex
 
 import (
 	"bufio"
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -9,182 +10,207 @@ import (
 	"os"
 	"strings"
 	"sync"
+	"time"
+
+	"im-agent/internal/telemetry"
 )
 
-// 桌面持有的活跃会话可能尚未更新独立 App Server 的分页索引。
-// 这里只读同一个 session_meta.id 的追加日志，不修改 Codex 文件、不恢复或执行会话。
-// 每个 Client 缓存已消费字节，只扫描新增完整行，保留最后一个用户输入和最终回复。
-type summaryReplyCandidate struct{ id, fingerprint string }
+type rolloutObservation struct {
+	Messages   []HistoryMessage
+	Snapshot   telemetry.Snapshot
+	UserItemID string
+	ReplyIssue string
+}
 
 type rolloutHistory struct {
-	summaryCandidates     []summaryReplyCandidate
-	summaryAmbiguous      bool
-	header                int64
-	currentTurn, userTurn string
+	anchor                []byte
 	mu                    sync.Mutex
 	path                  string
 	offset                int64
+	turnStart             int64
 	info                  os.FileInfo
-	verified              bool
+	discoveredAt          time.Time
+	currentTurn, userTurn string
 	user, assistant       HistoryMessage
+	state                 telemetry.State
+	lastAt                int64
+	replyIssue            string
 }
 
-func (c *Client) recentRollout(ctx context.Context, id string) ([]HistoryMessage, bool, error) {
+// 消息摘要与会话状态共用一个增量观察器；同一日志只按完整行推进。
+func (c *Client) observeRollout(ctx context.Context, id string) (rolloutObservation, bool, error) {
 	value, _ := c.rolloutHistories.LoadOrStore(id, &rolloutHistory{})
 	cache := value.(*rolloutHistory)
 	cache.mu.Lock()
 	defer cache.mu.Unlock()
-	if cache.path == "" {
-		cache.path, _ = findDesktopRollout(c.runtimeConfig.Codex.Home, id)
-		if cache.path == "" {
-			return nil, false, nil
+	if cache.path == "" || time.Since(cache.discoveredAt) > 5*time.Second {
+		files, err := c.LiveRolloutFiles(ctx, id)
+		if err != nil {
+			return rolloutObservation{}, true, err
 		}
+		if len(files) == 0 {
+			return rolloutObservation{}, false, nil
+		}
+		cache.path = files[len(files)-1]
+		cache.discoveredAt = time.Now()
 	}
-	file, err := os.Open(cache.path)
+	file, header, err := c.openLiveRollout(id, cache.path)
 	if err != nil {
-		return nil, true, errors.New("桌面会话日志不可读，未回退旧快照")
+		cache.discoveredAt = time.Time{}
+		return rolloutObservation{}, true, err
 	}
 	defer file.Close()
 	info, err := file.Stat()
 	if err != nil {
-		return nil, true, err
+		return rolloutObservation{}, true, err
 	}
-	if cache.info != nil && (!os.SameFile(cache.info, info) || info.Size() < cache.offset) {
-		cache.offset = 0
-		cache.verified = false
+	changed := false
+	if len(cache.anchor) > 0 && cache.offset <= info.Size() {
+		current := make([]byte, len(cache.anchor))
+		if _, readErr := file.ReadAt(current, cache.offset-int64(len(current))); readErr != nil {
+			return rolloutObservation{}, true, readErr
+		}
+		changed = !bytes.Equal(current, cache.anchor)
+	}
+	if cache.info == nil || !os.SameFile(cache.info, info) || info.Size() < cache.offset || changed {
+		cache.offset = header
+		cache.turnStart = header
+		cache.anchor = nil
+		cache.currentTurn, cache.userTurn = "", ""
 		cache.user, cache.assistant = HistoryMessage{}, HistoryMessage{}
-		cache.header = 0
-		cache.currentTurn = ""
-		cache.userTurn = ""
-		cache.summaryCandidates = nil
-		cache.summaryAmbiguous = false
+		cache.state, cache.lastAt, cache.replyIssue = telemetry.State{}, 0, ""
 	}
 	cache.info = info
 	if _, err = file.Seek(cache.offset, io.SeekStart); err != nil {
-		return nil, true, err
+		return rolloutObservation{}, true, err
 	}
-	reader := bufio.NewReaderSize(file, 64<<10)
+	reader := bufio.NewReaderSize(io.LimitReader(file, info.Size()-cache.offset), 64<<10)
 	for {
-		if ctx.Err() != nil {
-			return nil, true, ctx.Err()
+		if err = ctx.Err(); err != nil {
+			return rolloutObservation{}, true, err
 		}
-		raw, err := readRolloutLine(reader)
-		if err == io.EOF {
+		raw, readErr := readRolloutLine(reader)
+		if readErr == io.EOF {
 			break
-		} // 未完成的一行留到下次从原始 offset 重读。
-		if err != nil {
-			return nil, true, err
 		}
-		var record struct {
-			Type    string          `json:"type"`
-			Payload json.RawMessage `json:"payload"`
-		}
-		if json.Unmarshal(raw, &record) != nil {
-			return nil, true, errors.New("桌面会话日志包含无效记录")
-		}
-		if !cache.verified {
-			var meta struct {
-				ID string `json:"id"`
+		if errors.Is(readErr, errRolloutLineTooLarge) {
+			_, end, scanErr := oversizedLiveIssue(ctx, file, cache.offset)
+			if scanErr == io.EOF {
+				break
 			}
-			if record.Type != "session_meta" || json.Unmarshal(record.Payload, &meta) != nil || meta.ID != id {
-				return nil, true, errors.New("桌面日志会话标识不匹配，拒绝同步")
+			if scanErr != nil {
+				return rolloutObservation{}, true, scanErr
 			}
-			cache.verified = true
-			cache.header = cache.offset + int64(len(raw))
+			cache.replyIssue = "会话日志存在超限记录，当前轮次待核对"
+			cache.state.Halted = true
+			cache.state.Snapshot.Issue = "state_invalid"
+			cache.offset = end
+			cache.anchor = nil
+			if _, err = file.Seek(end, io.SeekStart); err != nil {
+				return rolloutObservation{}, true, err
+			}
+			reader = bufio.NewReaderSize(io.LimitReader(file, info.Size()-end), 64<<10)
+			continue
 		}
-		if record.Type == "event_msg" {
-			var event struct {
-				Type   string          `json:"type"`
-				TurnID string          `json:"turn_id"`
-				Last   string          `json:"last_agent_message"`
-				Error  json.RawMessage `json:"error"`
+		if readErr != nil {
+			return rolloutObservation{}, true, readErr
+		}
+		var row struct {
+			Type, Timestamp string
+			Payload         json.RawMessage
+		}
+		if json.Unmarshal(raw, &row) != nil {
+			cache.replyIssue = "会话观察日志存在无效记录，当前轮次待核对"
+			cache.state.Halted = true
+			cache.state.Snapshot.Issue = "state_invalid"
+			cache.advance(raw)
+			continue
+		}
+		var event struct {
+			Type   string
+			TurnID string          `json:"turn_id"`
+			Last   string          `json:"last_agent_message"`
+			Error  json.RawMessage `json:"error"`
+		}
+		if row.Type == "event_msg" {
+			if json.Unmarshal(row.Payload, &event) != nil {
+				cache.replyIssue = "会话事件格式无效，当前轮次待核对"
+				cache.state.Halted = true
+				cache.state.Snapshot.Issue = "state_invalid"
+				cache.advance(raw)
+				continue
 			}
-			if json.Unmarshal(record.Payload, &event) == nil {
-				if event.Type == "task_started" {
-					cache.currentTurn = event.TurnID
+			if event.Type == "task_started" {
+				cache.currentTurn = event.TurnID
+				cache.turnStart = cache.offset
+				cache.userTurn = ""
+				cache.user, cache.assistant = HistoryMessage{}, HistoryMessage{}
+				cache.replyIssue = ""
+			}
+		}
+		if row.Type == "response_item" {
+			message, visible, parseErr := publicUserMessage(row.Payload)
+			if parseErr != nil {
+				cache.replyIssue = parseErr.Error()
+			}
+			if visible {
+				cache.user, cache.assistant = message, HistoryMessage{}
+				cache.userTurn, cache.replyIssue = cache.currentTurn, ""
+			}
+		}
+		stamp, parseErr := time.Parse(time.RFC3339Nano, row.Timestamp)
+		if parseErr == nil && stamp.UnixMilli() > 0 && !stamp.After(time.Now().Add(5*time.Minute)) {
+			if err = applySessionTelemetry(&cache.state, id, row.Type, row.Payload, stamp.UnixMilli()); err != nil {
+				// 完整坏记录由实时读取账本隔离；观察器继续到下一明确轮次，不能永久卡在旧行。
+				cache.replyIssue = "公开消息或状态记录不完整，当前轮次待核对"
+				cache.state.Halted = true
+				cache.state.Snapshot.Issue = "state_invalid"
+			}
+			if stamp.UnixMilli() > cache.lastAt {
+				cache.lastAt = stamp.UnixMilli()
+			}
+		}
+		if event.Type == "task_complete" && !hasCompletionError(event.Error) && event.TurnID == cache.userTurn && cache.user.ID != "" {
+			replies, checkErr := finalRepliesAtCompletion(ctx, file, cache.turnStart, cache.offset, event.TurnID, event.Last)
+			if ctx.Err() != nil {
+				return rolloutObservation{}, true, ctx.Err()
+			}
+			if checkErr != nil {
+				cache.replyIssue = "最终回复未通过完成核验，摘要等待核对"
+				cache.state.Snapshot.CompletionOutputVerified = false
+			} else {
+				cache.replyIssue = ""
+				if len(replies) > 0 {
+					cache.assistant = replies[len(replies)-1].HistoryMessage
 				}
-				if event.Type == "task_complete" && !hasCompletionError(event.Error) && event.TurnID == cache.userTurn {
-					if event.Last != "" && !cache.summaryAmbiguous {
-						matches := 0
-						id := ""
-						for _, candidate := range cache.summaryCandidates {
-							if candidate.fingerprint == storeHash(event.Last) {
-								matches++
-								id = candidate.id
-							}
-						}
-						if matches == 1 {
-							cache.assistant = HistoryMessage{ID: id, Role: "assistant", Text: event.Last}
-						}
-					}
-					cache.summaryCandidates = nil
-				}
+				cache.state.Snapshot.CompletionOutputVerified = len(replies) > 0
 			}
 		}
-		if record.Type == "response_item" {
-			var item struct {
-				Type    string         `json:"type"`
-				Role    string         `json:"role"`
-				ID      string         `json:"id"`
-				Phase   string         `json:"phase"`
-				Status  string         `json:"status"`
-				Content []InputContent `json:"content"`
-				Meta    struct {
-					TurnID string `json:"turn_id"`
-				} `json:"internal_chat_message_metadata_passthrough"`
-			}
-			if json.Unmarshal(record.Payload, &item) == nil && item.Type == "message" {
-				var parts []string
-				for _, part := range item.Content {
-					if part.Type == "input_text" || part.Type == "output_text" || part.Type == "text" {
-						parts = append(parts, part.Text)
-					}
-				}
-				text := strings.TrimSpace(strings.Join(parts, "\n"))
-				if text != "" {
-					message := HistoryMessage{ID: item.ID, Role: item.Role, Text: text}
-					if message.ID == "" {
-						message.ID = storeHash(string(raw))
-					}
-					if item.Role == "user" && visibleUserText(text) {
-						cache.user = message
-						cache.summaryCandidates = nil
-						cache.summaryAmbiguous = false
-						cache.assistant = HistoryMessage{}
-						cache.userTurn = item.Meta.TurnID
-						if cache.userTurn == "" {
-							cache.userTurn = cache.currentTurn
-						}
-					}
-					actual := item.Meta.TurnID
-					if actual == "" && item.Phase == "final_answer" {
-						actual = cache.currentTurn
-					}
-					if item.Role == "assistant" && item.ID != "" && actual != "" && actual == cache.userTurn && completedPublicReply(item.Phase, item.Status) {
-						if body, supported := exactReplyText(item.Content); supported {
-							if len(cache.summaryCandidates) >= 512 {
-								cache.summaryAmbiguous = true
-							} else {
-								cache.summaryCandidates = append(cache.summaryCandidates, summaryReplyCandidate{id: item.ID, fingerprint: storeHash(body)})
-							}
-						}
-					}
-				}
-			}
-		}
-		cache.offset += int64(len(raw))
+		cache.advance(raw)
 	}
-	if !cache.verified {
-		return nil, true, errors.New("桌面会话日志元数据未完整写入")
+	out := rolloutObservation{UserItemID: cache.state.UserItemID, ReplyIssue: cache.replyIssue}
+	// 用量结构含指针；返回独立快照，避免后续增量扫描与展示读取发生数据竞争。
+	raw, _ := json.Marshal(cache.state.Snapshot)
+	_ = json.Unmarshal(raw, &out.Snapshot)
+	if out.Snapshot.StartedAt == 0 {
+		out.Snapshot = telemetry.Snapshot{Issue: "state_invalid", LastActivityAt: cache.lastAt}
 	}
-	messages := []HistoryMessage{}
-	if cache.user.Text != "" {
-		messages = append(messages, cache.user)
+	out.Snapshot.ObservedAt = time.Now().UnixMilli()
+	if cache.user.ID != "" {
+		out.Messages = append(out.Messages, cache.user)
 	}
-	if cache.assistant.Text != "" {
-		messages = append(messages, cache.assistant)
+	if cache.assistant.ID != "" {
+		out.Messages = append(out.Messages, cache.assistant)
 	}
-	return messages, true, nil
+	return out, true, nil
+}
+
+func (c *Client) recentRollout(ctx context.Context, id string) ([]HistoryMessage, bool, error) {
+	view, found, err := c.observeRollout(ctx, id)
+	if err == nil && view.ReplyIssue != "" {
+		err = errors.New(view.ReplyIssue)
+	}
+	return view.Messages, found, err
 }
 
 // 日志里的 user 角色也承载内部代理回传，不等于人类手工发送。
@@ -233,4 +259,12 @@ func readRolloutLine(reader *bufio.Reader) ([]byte, error) {
 		}
 		return raw, err
 	}
+}
+
+func (cache *rolloutHistory) advance(raw []byte) {
+	cache.offset += int64(len(raw))
+	if len(raw) > 256 {
+		raw = raw[len(raw)-256:]
+	}
+	cache.anchor = append(cache.anchor[:0], raw...)
 }

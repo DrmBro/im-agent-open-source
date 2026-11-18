@@ -98,7 +98,7 @@ func (b *Bridge) importCodexThreads(ctx context.Context) {
 			b.scanDiagnostic("failed", "创建 IM 会话容器失败："+diagnostics.Error(err)+"。请检查机器人建群权限及管理员 Open ID 是否属于同一应用")
 			return
 		}
-		if err := b.store.Save(store.Session{ThreadID: thread.ID, Address: address, WorkDir: workDir, Owner: owner, Managed: true, GroupName: b.threadName(thread, cc.ID)}); err != nil {
+		if err := b.saveSession(store.Session{ThreadID: thread.ID, Address: address, WorkDir: workDir, Owner: owner, Managed: true, GroupName: b.threadName(thread, cc.ID)}); err != nil {
 			b.scanDiagnostic("failed", "群聊/话题已创建，但会话映射保存失败")
 			return
 		}

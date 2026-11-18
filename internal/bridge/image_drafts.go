@@ -17,17 +17,6 @@ func (b *Bridge) imageIntakeLock(msg im.Message) *sync.Mutex {
 	value, _ := b.imageLocks.LoadOrStore(msg.Address.Key()+"\x00"+msg.UserID, &sync.Mutex{})
 	return value.(*sync.Mutex)
 }
-func imageOnly(msg im.Message) bool {
-	if strings.TrimSpace(msg.Text) != "" || len(msg.Attachments) == 0 {
-		return false
-	}
-	for _, a := range msg.Attachments {
-		if a.Kind != "image" {
-			return false
-		}
-	}
-	return true
-}
 
 // 普通文件和图片都先等待明确说明；不替用户生成执行任务。
 func attachmentOnly(msg im.Message) bool {

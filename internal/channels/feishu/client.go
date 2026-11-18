@@ -155,7 +155,7 @@ func (c *Client) Start(ctx context.Context, onMessage func(context.Context, im.M
 		fields := map[string]string{}
 		for key, value := range v.Action.FormValue {
 			text, ok := value.(string)
-			if !ok || len(text) > 32000 || len(fields) >= 8 {
+			if !ok || len(text) > 32000 || len(fields) >= 20 {
 				return reject(), nil
 			}
 			fields[key] = text
@@ -310,7 +310,13 @@ func (c *Client) createConversation(ctx context.Context, v im.Conversation, mess
 	if v.Owner != "" {
 		body["owner_id"] = v.Owner
 	}
-	raw, e := c.request(ctx, "POST", "/im/v1/chats?user_id_type=open_id&set_bot_manager=true", body)
+	query := url.Values{"user_id_type": {"open_id"}, "set_bot_manager": {"true"}}
+	if v.IdempotencyKey != "" {
+		// 平台去重窗口有限；桥接仍须先持久化创建意图并保留未知结果。
+		sum := sha256.Sum256([]byte(v.IdempotencyKey))
+		query.Set("uuid", hex.EncodeToString(sum[:16]))
+	}
+	raw, e := c.request(ctx, "POST", "/im/v1/chats?"+query.Encode(), body)
 	if e != nil {
 		var platform *apiError
 		if errors.As(e, &platform) && (platform.code != 0 || platform.httpStatus >= 400 && platform.httpStatus < 500) {

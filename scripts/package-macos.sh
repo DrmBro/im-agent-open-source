@@ -39,6 +39,8 @@ trap 'rm -rf "$staging"' EXIT
 mkdir -p "$staging/image"
 /usr/bin/ditto --norsrc --noextattr "$source_app" "$staging/image/IM Agent.app"
 cp "$notices" "$staging/image/THIRD_PARTY_NOTICES.txt"
+# 源码级 MIT 借鉴随 App 一并分发，也兼容普通 Wails 构建产物。
+cat "$project_dir/third_party/happy/NOTICE.md" "$project_dir/third_party/happy/LICENSE" > "$staging/image/IM Agent.app/Contents/Resources/HAPPY_NOTICE.txt"
 cp "$project_dir/docs/distribution/朋友试用说明.txt" "$staging/image/先读我-安装与配置.txt"
 /usr/libexec/PlistBuddy -c "Set :CFBundleVersion $version" "$staging/image/IM Agent.app/Contents/Info.plist"
 /usr/bin/codesign --force --sign - "$staging/image/IM Agent.app"
@@ -48,7 +50,7 @@ ln -s /Applications "$staging/image/Applications"
 import sys
 from pathlib import Path
 application = Path(sys.argv[1])
-allowed = {'Contents/Info.plist', 'Contents/MacOS/im-agent', 'Contents/Resources/iconfile.icns', 'Contents/_CodeSignature/CodeResources'}
+allowed = {'Contents/Info.plist', 'Contents/MacOS/im-agent', 'Contents/Resources/iconfile.icns', 'Contents/Resources/HAPPY_NOTICE.txt', 'Contents/_CodeSignature/CodeResources'}
 files = set()
 for path in application.rglob('*'):
     if path.is_symlink():

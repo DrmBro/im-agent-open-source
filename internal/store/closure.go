@@ -108,6 +108,16 @@ ON CONFLICT(thread_id) DO UPDATE SET
 	if e != nil {
 		return e
 	}
+	// 关闭是明确撤销远程入口，不等同于网络断开。只撤销尚未执行的控制，
+	// responding/uncertain 保留原证据，不自动向桌面发送拒绝或再次中断。
+	if _, e = tx.Exec(`UPDATE session_controls SET state='cancelled',detail='会话已关闭，旧控制入口失效'
+WHERE thread_id=? AND state='open'`, thread); e != nil {
+		return e
+	}
+	if _, e = tx.Exec(`UPDATE desktop_approval_cards SET state='revoked',detail='会话已关闭，旧审批入口失效；未向桌面发送选择',updated_at=?
+WHERE thread_id=? AND state='pending' AND decision=''`, now, thread); e != nil {
+		return e
+	}
 	return tx.Commit()
 }
 

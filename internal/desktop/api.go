@@ -171,3 +171,30 @@ func (a *API) LaunchDesktopApplication(path string, confirmed bool) (desktoplaun
 	defer cancel()
 	return desktoplaunch.Launch(ctx, path, snapshot.Config.Codex.CdpPort, confirmed)
 }
+
+/* GetPersonalInbox is exposed through Wails. */
+func (a *API) GetPersonalInbox() ([]store.PersonalInboxItem, error) {
+	a.app.mu.Lock()
+	if e := a.app.ready(); e != nil {
+		a.app.mu.Unlock()
+		return nil, e
+	}
+	c, p := a.app.controller, a.app.ctx
+	a.app.mu.Unlock()
+	ctx, cancel := context.WithTimeout(p, 15*time.Second)
+	defer cancel()
+	return c.PersonalInbox(ctx)
+}
+
+func (a *API) ReviewPersonalInbox(x bridge.PersonalInboxAction) error {
+	a.app.mu.Lock()
+	if e := a.app.ready(); e != nil {
+		a.app.mu.Unlock()
+		return e
+	}
+	c, p := a.app.controller, a.app.ctx
+	a.app.mu.Unlock()
+	ctx, cancel := context.WithTimeout(p, 30*time.Second)
+	defer cancel()
+	return c.ReviewPersonalInbox(ctx, x)
+}

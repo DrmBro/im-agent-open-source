@@ -48,7 +48,7 @@ func (b *Bridge) archiveClosedConversation(ctx context.Context, thread string) e
 			return errors.New("归档尝试状态无效，未发送")
 		}
 	}
-	plan, e := b.codex.PrepareClosedChatArchive(ctx, thread)
+	plan, e := b.engineForThread(thread).PrepareClosedChatArchive(ctx, thread)
 	if e != nil {
 		return e
 	}

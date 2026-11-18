@@ -80,27 +80,37 @@ func (b *Bridge) conversationClosed(ctx context.Context, event im.ConversationCl
 	return b.requestClose(s.ThreadID, "im", false, true)
 }
 func (b *Bridge) watchArchiveEvents(ctx context.Context) {
+	var cliEvents <-chan string
+	var cliDone <-chan struct{}
+	if b.cli != nil && b.cli != b.codex {
+		cliEvents = b.cli.ArchivedEvents()
+		cliDone = b.cli.Done()
+	}
 	for {
+		var id string
 		select {
 		case <-ctx.Done():
 			return
 		case <-b.codex.Done():
 			return
-		case id := <-b.codex.ArchivedEvents():
-			if id == "" {
-				continue
-			}
-			_, e := b.store.ByThread(id)
-			if errors.Is(e, sql.ErrNoRows) {
-				continue
-			}
-			if e != nil {
-				b.setLifecycleWarning("处理 Codex 归档通知失败，稍后归档列表扫描补偿")
-				continue
-			}
-			if e = b.requestClose(id, "codex", true, false); e != nil {
-				b.setLifecycleWarning("持久化归档通知失败，稍后扫描补偿")
-			}
+		case <-cliDone:
+			return
+		case id = <-b.codex.ArchivedEvents():
+		case id = <-cliEvents:
+		}
+		if id == "" {
+			continue
+		}
+		_, e := b.store.ByThread(id)
+		if errors.Is(e, sql.ErrNoRows) {
+			continue
+		}
+		if e != nil {
+			b.setLifecycleWarning("处理 Codex 归档通知失败，稍后归档列表扫描补偿")
+			continue
+		}
+		if e = b.requestClose(id, "codex", true, false); e != nil {
+			b.setLifecycleWarning("持久化归档通知失败，稍后扫描补偿")
 		}
 	}
 }
@@ -269,7 +279,7 @@ func (b *Bridge) closeOne(ctx context.Context, thread string) error {
 	}
 	if !job.CodexArchived {
 		// 支持归档请求已成功但响应丢失的情况；先确认实际状态，避免盲目重复归档。
-		archived, e := b.codex.Archived(ctx)
+		archived, e := b.engineForThread(thread).Archived(ctx)
 		if e != nil {
 			return errors.New("无法确认 Codex 归档状态，等待重试")
 		}
@@ -289,7 +299,7 @@ func (b *Bridge) closeOne(ctx context.Context, thread string) error {
 			if job.ChatClosed && target.Managed && !target.Address.IsTopic() && target.Address.RootMessageID == "" {
 				e = b.archiveClosedConversation(ctx, thread)
 			} else {
-				e = b.codex.Archive(ctx, thread)
+				e = b.engineForThread(thread).Archive(ctx, thread)
 			}
 			if e != nil {
 				if job.ChatClosed {

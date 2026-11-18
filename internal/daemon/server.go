@@ -18,7 +18,7 @@ import (
 	"time"
 
 	"im-agent/internal/channels"
-	"im-agent/internal/channels/feishu"
+	"im-agent/internal/channels/builtin"
 	"im-agent/internal/preferences"
 	"im-agent/internal/service"
 )
@@ -137,7 +137,7 @@ func Run(parent context.Context, dir string) error {
 		return err
 	}
 	reg := channels.NewRegistry()
-	if err = feishu.Register(reg); err != nil {
+	if err = builtin.Register(reg); err != nil {
 		return err
 	}
 	prefs, err := preferences.New(dir, reg)

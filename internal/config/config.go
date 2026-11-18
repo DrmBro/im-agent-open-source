@@ -20,7 +20,10 @@ type Config struct {
 	Watch       Watch        `json:"watch"`
 }
 type Codex struct {
-	SubmissionMode          string `json:"submission_mode"`
+	PersonalReply  bool   `json:"-"` // 仅运行时使用，个人收件不继承 IM 控制会话的 Full Access。
+	RoutingOnly    bool   `json:"-"`
+	SubmissionMode string `json:"submission_mode"`
+	// 以下三个字段仅用于读取旧配置；正式提交不操作输入框，界面不再提供无效开关。
 	AutoSwitchThread        bool   `json:"auto_switch_thread"`
 	PreserveDesktopDraft    bool   `json:"preserve_desktop_draft"`
 	AutoRestoreDesktopDraft bool   `json:"auto_restore_desktop_draft"`
@@ -33,15 +36,20 @@ type Codex struct {
 	CdpPort                 int    `json:"cdp_port"`
 }
 type Connection struct {
-	ID               string            `json:"id"`
-	Type             string            `json:"type"`
-	AllowedUsers     []string          `json:"allowed_users"`
-	AdminUsers       []string          `json:"admin_users"`
-	ChatNamePrefix   string            `json:"chat_name_prefix"`
-	AutoCreateChat   bool              `json:"auto_create_chat"`
-	ConversationMode string            `json:"conversation_mode"`
-	SharedChatID     string            `json:"shared_chat_id"`
-	Credentials      map[string]string `json:"-"`
+	PersonalGroupFollowup   bool              `json:"personal_group_followup,omitempty"`
+	PersonalFollowupMinutes int               `json:"personal_followup_minutes,omitempty"`
+	PersonalAllDirect       bool              `json:"personal_all_direct,omitempty"`
+	PersonalMentions        bool              `json:"personal_mentions,omitempty"`
+	PersonalAutoReplyUsers  []string          `json:"personal_auto_reply_users,omitempty"`
+	ID                      string            `json:"id"`
+	Type                    string            `json:"type"`
+	AllowedUsers            []string          `json:"allowed_users"`
+	AdminUsers              []string          `json:"admin_users"`
+	ChatNamePrefix          string            `json:"chat_name_prefix"`
+	AutoCreateChat          bool              `json:"auto_create_chat"`
+	ConversationMode        string            `json:"conversation_mode"`
+	SharedChatID            string            `json:"shared_chat_id"`
+	Credentials             map[string]string `json:"-"`
 }
 type Limits struct {
 	TurnTimeoutSeconds     int `json:"turn_timeout_seconds"`
@@ -199,6 +207,9 @@ func validate(c Config, base string, requireConnections bool) (Config, error) {
 	ids := map[string]bool{}
 	for i := range c.Connections {
 		x := &c.Connections[i]
+		// 兼容旧配置字段，但群任务自动跟进已移除。
+		x.PersonalGroupFollowup = false
+		x.PersonalFollowupMinutes = 0
 		if x.Type == "" {
 			return c, errors.New("IM 连接 type 不能为空")
 		}
@@ -206,6 +217,17 @@ func validate(c Config, base string, requireConnections bool) (Config, error) {
 			return c, errors.New("连接 ID 无效或重复")
 		}
 		ids[x.ID] = true
+		if (x.PersonalAllDirect || x.PersonalMentions || x.PersonalGroupFollowup || x.PersonalFollowupMinutes != 0) && !IsPersonalChannel(x.Type) {
+			return c, errors.New("个人消息监听范围只能用于 DWS 个人渠道")
+		}
+		if len(x.PersonalAutoReplyUsers) > 20 {
+			return c, errors.New("自动回复规则最多20位联系人")
+		}
+		for _, u := range x.PersonalAutoReplyUsers {
+			if !IsPersonalChannel(x.Type) || !Contains(x.AllowedUsers, u) || Contains(x.AdminUsers, u) {
+				return c, errors.New("自动回复联系人必须在个人渠道白名单内，且不能是管理员本人")
+			}
+		}
 		if len(x.AllowedUsers) == 0 || len(x.AdminUsers) == 0 || len(x.AllowedUsers) > 500 || len(x.AdminUsers) > 49 {
 			return c, errors.New("白名单必须为 1..500 人，管理员必须为 1..49 人，禁止默认全员开放")
 		}

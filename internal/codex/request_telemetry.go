@@ -178,6 +178,10 @@ func applyRequestTelemetry(state *telemetry.State, thread, kind string, raw json
 			actual = state.CurrentTurn
 		}
 		if item.Type == "message" && item.Role == "user" {
+			// user 角色也承载内部通知；不能据此中止已关联请求的采集。
+			if text, ok := exactReplyText(item.Content); ok && internalSubagentNotification(text) {
+				return false, nil
+			}
 			if item.ID == state.UserItemID {
 				state.MatchedUserCount++
 				if actual == "" || state.MatchedTurn != "" && state.MatchedTurn != actual {
@@ -214,6 +218,7 @@ func applyRequestTelemetry(state *telemetry.State, thread, kind string, raw json
 				if text, supported := exactReplyText(item.Content); supported && text != "" {
 					state.Snapshot.Preview = publicPreview(redact.New().Text(text))
 					state.Snapshot.PreviewAt = at
+					state.Snapshot.PreviewScope = ""
 				}
 				if state.Snapshot.FirstOutputAt == 0 || at < state.Snapshot.FirstOutputAt {
 					state.Snapshot.FirstOutputAt = at
@@ -225,6 +230,13 @@ func applyRequestTelemetry(state *telemetry.State, thread, kind string, raw json
 			} else if state.CurrentTurn == state.MatchedTurn {
 				state.UnconfirmedOutputs++
 				state.Snapshot.OutputConflict = true
+				// 仅作会话级临时预览，不据此确认轮次输出时间或完成状态。
+				if item.ID != "" && state.MatchedUserCount == 1 {
+					if text, ok := exactReplyText(item.Content); ok {
+						state.Snapshot.Preview = publicPreview(redact.New().Text(text))
+						state.Snapshot.PreviewAt, state.Snapshot.PreviewScope = at, "session"
+					}
+				}
 			}
 		}
 		if actual == state.MatchedTurn {

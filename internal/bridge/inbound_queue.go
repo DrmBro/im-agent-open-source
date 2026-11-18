@@ -2,6 +2,7 @@ package bridge
 
 import (
 	"context"
+	"database/sql"
 	"errors"
 	"time"
 
@@ -27,7 +28,16 @@ func (b *Bridge) syncInboundQueue(ctx context.Context) {
 				return
 			}
 			adapter := b.channels[msg.Address.Connection]
-			if adapter == nil || !b.allowed(msg.Address.Connection, msg.UserID) {
+			if adapter == nil || !b.messageAllowed(adapter, msg) {
+				if err := b.rejectInbound(msg.ID, store.Hash(msg.Address.Key()), "恢复收件时原发送者或连接权限已失效，未执行旧输入"); err != nil {
+					b.log.Warn("保存失效收件状态失败", "error", diagnostics.Error(err))
+				}
+				continue
+			}
+			if _, retired, err := b.store.RetiredTarget(msg.Address); err != nil {
+				continue
+			} else if retired {
+				_ = b.rejectInbound(msg.ID, store.Hash(msg.Address.Key()), "原收件入口已迁移，未把旧输入送往新入口")
 				continue
 			}
 			lock := b.imageIntakeLock(msg)
@@ -63,7 +73,7 @@ func (b *Bridge) syncInboundQueue(ctx context.Context) {
 	}
 }
 
-func (b *Bridge) scheduleInbound(item store.QueuedInbound) error {
+func (b *Bridge) scheduleNormalInbound(item store.QueuedInbound) error {
 	if _, loaded := b.inboundScheduled.LoadOrStore(item.EventID, true); loaded {
 		return nil
 	}
@@ -75,10 +85,20 @@ func (b *Bridge) scheduleInbound(item store.QueuedInbound) error {
 	}()
 	session, err := b.store.ByThread(item.ThreadID)
 	if err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return b.rejectInbound(item.EventID, item.AddressKey, "原排队会话不存在，未执行旧输入")
+		}
 		return err
 	}
 	if session.Status != "active" || store.Hash(session.Address.Key()) != item.AddressKey {
-		return diagnostics.UserError("排队请求的目标会话或地址已改变，不跨会话转发")
+		return b.rejectInbound(item.EventID, item.AddressKey, "排队请求的目标会话或地址已改变，不跨会话转发")
+	}
+	if err = b.inboundAccess(session, item.Message); err != nil {
+		var denied diagnostics.UserError
+		if errors.As(err, &denied) {
+			return b.rejectInbound(item.EventID, item.AddressKey, string(denied))
+		}
+		return err
 	}
 	adapter := b.channels[session.Address.Connection]
 	if adapter == nil {
@@ -86,6 +106,18 @@ func (b *Bridge) scheduleInbound(item store.QueuedInbound) error {
 	}
 	if err = b.jobs.Push(session.Address.Key(), func(jobCtx context.Context) {
 		defer b.inboundScheduled.Delete(item.EventID)
+		if jobCtx.Err() != nil {
+			return // 普通停止保留明确未提交的队列，不能当作主动撤权。
+		}
+		if err := b.inboundAccess(session, item.Message); err != nil {
+			var denied diagnostics.UserError
+			if errors.As(err, &denied) {
+				if saveErr := b.rejectInbound(item.EventID, item.AddressKey, string(denied)); saveErr != nil {
+					b.log.Warn("保存排队请求失效状态失败", "error", diagnostics.Error(saveErr))
+				}
+			}
+			return
+		}
 		// 停止/重启与用户取消后，已入队的内存快照不可再次提交。
 		current, checkErr := b.store.BeginQueuedInbound(item.EventID, session.ThreadID, item.AddressKey)
 		if checkErr != nil || !current {
@@ -96,9 +128,18 @@ func (b *Bridge) scheduleInbound(item store.QueuedInbound) error {
 			if !recorded {
 				return
 			}
+			if adapter.Capabilities().PersonalInbox {
+				if err := b.store.PutPersonalFailure(session, item.Message, "处理未完成："+notice.Text()); err == nil {
+					if notify, err := b.store.ClaimPersonalNotice(item.EventID); err == nil && notify {
+						b.notifyPersonalReview(jobCtx)
+					}
+				}
+			}
 			b.messageDiagnostic(notice.Status, notice.Text())
 			b.log.Error("Codex 请求处理未完成", "chat", session.Address.ChatID, "stage", notice.Stage)
-			_ = b.sendTextLimited(jobCtx, adapter, session.Address, notice.Text(), item.EventID)
+			if !adapter.Capabilities().PersonalInbox {
+				_ = b.sendTextLimited(jobCtx, adapter, session.Address, notice.Text(), item.EventID)
+			}
 		} else {
 			_ = b.store.EventStage(item.EventID, session.Address.Key(), "completed", "")
 			b.messageDiagnostic("completed", "已完成一次任务回复")

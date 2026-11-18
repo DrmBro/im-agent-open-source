@@ -59,16 +59,24 @@ func taskBoardQuery(ctx context.Context, tx *sql.Tx, tables map[string]bool) (st
 		if tables["history_content_pruned"] {
 			where += " AND NOT (e.status IN ('done','failed','queued_failed','cancelled','expired') AND EXISTS(SELECT 1 FROM history_content_pruned h WHERE h.kind='event' AND h.key1=e.id AND h.key2=''))"
 		}
-		// done 仅表示旧执行入口已结束；没有完成与送达证据时保持待确认。
-		state := `CASE
- WHEN ` + delivery + ` IN ('failed','unknown') THEN 'attention'
- WHEN ` + execution + `='completed' AND ` + delivery + `='sent' THEN 'completed'
- WHEN e.status IN ('failed','uncertain','interrupted','queued_failed','queue_failed') OR ` + execution + `='failed' THEN 'attention'
- WHEN e.status IN ('cancelled','expired','bundled','rejected') THEN 'closed'
- WHEN ` + execution + `='completed' AND ` + delivery + ` IN ('pending','awaiting_replies') THEN 'active'
- WHEN e.status='waiting_input' OR (e.status='processing' AND ` + stage + ` IN ('waiting_draft','waiting_input','waiting_approval')) THEN 'waiting'
- WHEN e.status='processing' THEN 'active'
- ELSE 'attention' END`
+		state := requestStateSQL("e.status", stage, execution, delivery)
+		if tables["personal_reviews"] {
+			joins += " LEFT JOIN personal_reviews pr ON pr.event_id=e.id"
+			thread = "coalesce(pr.thread_id," + thread + ")"
+			connection = "coalesce((SELECT ps.connection_id FROM sessions ps WHERE ps.thread_id=pr.thread_id)," + connection + ")"
+			state = "CASE WHEN pr.state='pending' THEN 'waiting' WHEN pr.state IN ('approved','sending') THEN 'active' WHEN pr.state='sent' THEN 'completed' WHEN pr.state IN ('manual','ignored') THEN 'closed' WHEN pr.state='unknown' THEN 'attention' ELSE " + state + " END"
+			stage = "CASE WHEN pr.event_id IS NOT NULL THEN 'review_'||pr.state ELSE " + stage + " END"
+			title = "CASE WHEN pr.event_id IS NOT NULL THEN '个人消息审核 · '||substr(pr.peer,1,24) ELSE " + title + " END"
+			detail = "CASE WHEN pr.event_id IS NOT NULL THEN pr.reason ELSE " + detail + " END"
+			updated = "max(" + updated + ",coalesce(pr.updated_at,0))"
+		}
+
+		if tables["steer_inputs"] {
+			joins += " LEFT JOIN steer_inputs si ON si.event_id=e.id"
+			thread = "coalesce(si.thread_id," + thread + ")"
+			connection = "coalesce((SELECT ss.connection_id FROM sessions ss WHERE ss.thread_id=si.thread_id)," + connection + ")"
+			title = "CASE WHEN si.event_id IS NOT NULL THEN '会话补充 · '||substr(si.turn_id,1,12) ELSE " + title + " END"
+		}
 		sources = append(sources, "SELECT 'session' AS source,e.id,"+thread+" AS thread_id,"+connection+" AS connection,"+title+" AS title,"+state+" AS state,"+stage+" AS stage,"+execution+" AS execution,"+delivery+" AS delivery,substr("+detail+",1,1024) AS detail,e.created_at AS received_at,"+updated+" AS updated_at,"+title+" AS search_text"+joins+where)
 		if !columns["stage"] || !tables["request_results"] {
 			warnings = append(warnings, "部分旧会话任务缺少执行证据，按待确认展示")

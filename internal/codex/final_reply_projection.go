@@ -30,6 +30,9 @@ func finalRepliesAtCompletion(ctx context.Context, file *os.File, header, end in
 	}
 	current := ""
 	starts := 0
+	users := 0
+	matchingFinalCount := 0
+	var completionCandidate *LiveMessage
 	ids := map[string]bool{}
 	finals := []LiveMessage{}
 	unphased := []LiveMessage{}
@@ -82,8 +85,27 @@ func finalRepliesAtCompletion(ctx context.Context, file *os.File, header, end in
 		if json.Unmarshal(record.Payload, &item) != nil {
 			return nil, errors.New("回复条目无效")
 		}
-		if item.Type != "message" || item.Role != "assistant" {
+		if item.Type != "message" {
 			continue
+		}
+		if item.Role == "user" && current == turn {
+			// 新会话的环境说明也是 user 记录，但不属于本轮用户输入。
+			if _, visible, parseErr := publicUserMessage(record.Payload); parseErr != nil {
+				return nil, parseErr
+			} else if visible {
+				users++
+			}
+		}
+		if item.Role != "assistant" {
+			continue
+		}
+		// 提供方可能保留独立的内部轮次 ID；只保存当前执行范围内的最终候选。
+		// 跨标识关联必须再通过本轮用户输入及唯一匹配完成正文的最终条目逐字核验。
+		if current == turn && item.Phase == "final_answer" {
+			if text, ok := exactReplyText(item.Content); ok && item.ID != "" && last != "" && text == last {
+				matchingFinalCount++
+				completionCandidate = &LiveMessage{HistoryMessage: HistoryMessage{ID: item.ID, Role: "assistant", Text: text}, Offset: offset}
+			}
 		}
 		actual := item.Meta.TurnID
 		if actual == "" {
@@ -118,6 +140,9 @@ func finalRepliesAtCompletion(ctx context.Context, file *os.File, header, end in
 	}
 	if starts != 1 {
 		return nil, errors.New("无法完整核验该轮次的回复范围")
+	}
+	if len(finals) == 0 && len(unphased) == 0 && current == turn && users > 0 && matchingFinalCount == 1 && completionCandidate != nil {
+		finals = append(finals, *completionCandidate)
 	}
 	covered := false
 	for _, reply := range finals {

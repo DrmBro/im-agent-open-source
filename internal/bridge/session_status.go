@@ -13,65 +13,28 @@ import (
 	"im-agent/internal/store"
 )
 
-func sessionStatusStage(stage string) string {
-	labels := map[string]string{
-		"queued": "本地排队", "starting": "准备处理", "resuming": "准备会话",
-		"downloading_attachment": "处理附件", "submitting": "提交消息",
-		"waiting_desktop_submit": "等待桌面提交", "checking_desktop": "检查桌面输入区",
-		"preserving_draft": "备份桌面草稿", "restoring_draft": "恢复桌面草稿",
-		"waiting_draft": "等待草稿处理", "waiting_desktop": "等待桌面就绪",
-		"switching_desktop": "切换会话", "waiting_approval": "等待确认",
-		"waiting_editor": "等待输入区", "waiting_dialog": "等待弹窗处理",
-		"waiting_desktop_approval": "等待桌面确认",
-	}
-	if label := labels[stage]; label != "" {
-		return label
-	}
-	return "状态待核对"
-}
-
 // 状态只说明本次请求已确认的边界；桌面提交不等于模型轮次已开始。
 func readonlySessionCard(view store.SessionStatus, now time.Time) im.Card {
 	result := view.Result
-	state := "状态待核对"
 	if view.Desktop != nil {
 		return desktopSessionCard(view, now)
 	}
-	switch {
-	case view.Task.ID == "":
-		state = "尚无请求记录"
-	case view.Telemetry != nil && view.Telemetry.Snapshot.Outcome == "failed":
-		state = "本轮响应失败"
-	case view.Telemetry != nil && view.Telemetry.Snapshot.Outcome == "interrupted":
-		state = "本轮已中断"
-	case result != nil && result.Delivery == "sent":
-		state = "已回复"
-	case result != nil && result.Execution == "completed" && result.Delivery == "awaiting_replies":
-		state = "模型已完成，回复待核对"
-	case result != nil && result.Execution == "completed":
-		state = "模型已完成，回复同步中"
-	case result != nil && result.Execution == "failed":
-		state = "模型执行失败"
-	case view.Task.Status == "done":
-		state = "已回复"
-	case view.Task.Status == "uncertain" || view.Task.Status == "interrupted":
-		state = "结果待核对"
-	case view.Task.Status == "failed" || view.Task.Status == "queued_failed":
-		if notice, ok := failureNoticeForStage(view.Task.Stage); ok {
-			state = notice.Title
-		} else {
-			state = "任务失败"
+	task := view.Task
+	task.Result = result
+	state := store.RequestStateLabel(task)
+	// 轮次遥测只细化尚在执行的请求，不覆盖持久化完成或投递异常证据。
+	if store.RequestState(task) == "active" && task.Status == "processing" && task.Stage == "waiting_model" &&
+		(result == nil || result.Execution != "completed") && view.Telemetry != nil && view.Telemetry.Snapshot.Issue != "identity_conflict" {
+		switch view.Telemetry.Snapshot.Outcome {
+		case "failed":
+			state = "本轮响应失败"
+		case "interrupted":
+			state = "本轮已中断"
+		default:
+			if view.Telemetry.Snapshot.StartedAt > 0 {
+				state = "已进入对应轮次，模型处理中"
+			}
 		}
-	case view.Task.Status == "processing" && view.Task.Stage == "waiting_model":
-		if view.Telemetry != nil && view.Telemetry.Snapshot.StartedAt > 0 && view.Telemetry.Snapshot.Issue != "identity_conflict" {
-			state = "已进入对应轮次，模型处理中"
-		} else {
-			state = "已提交，等待模型开始"
-		}
-	case view.Task.Status == "processing" && view.Task.Stage == "delivering_reply":
-		state = "回复发送中"
-	case view.Task.Status == "processing":
-		state = "尚未交给模型 · " + sessionStatusStage(view.Task.Stage)
 	}
 	text := "当前状态：" + state
 	if view.Task.ID != "" {

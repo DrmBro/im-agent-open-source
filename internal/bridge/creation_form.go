@@ -62,7 +62,7 @@ func (b *Bridge) openCreationForm(ctx context.Context, adapter im.Adapter, msg i
 	if e = b.store.PutCreationForm(f); e != nil {
 		return e
 	}
-	card := im.Card{Title: "新建 Codex 会话", ActionID: f.ID, Text: "项目与模型来自本机 Codex 目录。可在项目下拉框中搜索；多个根目录分别列出。选项只作用于新会话，不修改全局配置。表单不设等待期限，可稍后填写。填写首问后只需提交一次，后台创建独立群并自动尝试执行；结果将显示在新群。", Form: &im.Form{SubmitLabel: "创建并开始", Fields: []im.FormField{
+	card := im.Card{Title: "新建 Codex 会话", ActionID: f.ID, Text: "新会话权限：Full Access（完全访问），命令无需逐次审批。项目与模型来自本机 Codex 目录。可在项目下拉框中搜索；多个根目录分别列出。选项只作用于新会话，不修改全局配置。表单不设等待期限，可稍后填写。填写首问后只需提交一次，后台创建独立群并自动尝试执行；结果将显示在新群。", Form: &im.Form{SubmitLabel: "创建并开始", Fields: []im.FormField{
 		{Name: "project", Label: "项目 / 工作目录", Placeholder: "搜索并选择项目", Required: true, Default: "automatic", Options: projectOptions},
 		{Name: "model", Label: "模型", Placeholder: "选择模型", Required: true, Default: first.Model, Options: models},
 		{Name: "effort", Label: "思考程度（必须受所选模型支持）", Placeholder: "选择思考程度", Required: true, Default: effort, Options: efforts},
@@ -190,14 +190,14 @@ func (b *Bridge) executeCreationForm(parent context.Context, adapter im.Adapter,
 		return
 	}
 	session := store.Session{ThreadID: thread.ID, Address: address, WorkDir: thread.Cwd, Owner: f.UserID, Managed: true, GroupName: b.threadName(thread, address.Connection), Fresh: true}
-	if e = b.store.Save(session); e != nil {
+	if e = b.saveSession(session); e != nil {
 		b.bindMu.Unlock()
 		fail("保存会话映射", thread.ID, e)
 		return
 	}
 	b.bindMu.Unlock()
 	_ = b.store.CreationProgress(f.ID, "claimed", "submitting_first_question", thread.ID, "")
-	summary := fmt.Sprintf("项目：%s\n目录：%s\n模型：%s\n思考程度：%s\n新群：%s\n群 ID：%s\nCodex：%s", p.Name, thread.Cwd, selected.Model, selected.Effort, session.GroupName, address.ChatID, thread.ID)
+	summary := fmt.Sprintf("权限：Full Access（完全访问）\n项目：%s\n目录：%s\n模型：%s\n思考程度：%s\n新群：%s\n群 ID：%s\nCodex：%s", p.Name, thread.Cwd, selected.Model, selected.Effort, session.GroupName, address.ChatID, thread.ID)
 	update("会话和群已创建，正在提交首问", summary+"\n已保存首条问题，无需去新群重新输入。若桌面尚未显示新会话，将明确报告，不会偷换执行通道。")
 	e = b.jobs.Push(address.Key(), func(job context.Context) { b.runCreationFirstQuestion(job, adapter, f, session, selected, summary) })
 	if e != nil {

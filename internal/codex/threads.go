@@ -33,6 +33,7 @@ type Turn struct {
 	} `json:"error"`
 }
 type Thread struct {
+	Preview     string `json:"preview"`
 	ProjectID   string `json:"projectId"`
 	Model       string `json:"model"`
 	Effort      string `json:"reasoningEffort"`
@@ -61,10 +62,24 @@ func Options(c config.Config) map[string]any {
 func (c *Client) Thread(ctx context.Context, method, id string, cfg config.Config) (Thread, error) {
 	p := Options(cfg)
 	if method == "thread/start" {
-		p["ephemeral"] = false
+		if !cfg.Codex.PersonalReply {
+			fullAccessCreation(p)
+		}
+		p["ephemeral"] = cfg.Codex.RoutingOnly
 	}
 	if method == "thread/resume" {
+		// 恢复使用会话自身权限，不用辅助进程策略覆盖已创建会话。
+		if !cfg.Codex.PersonalReply {
+			delete(p, "sandbox")
+			delete(p, "approvalPolicy")
+			delete(p, "approvalsReviewer")
+		}
 		p["excludeTurns"] = true
+	}
+	if cfg.Codex.PersonalReply {
+		if err := personalReplyOptions(cfg, p); err != nil {
+			return Thread{}, err
+		}
 	}
 	if id != "" {
 		p["threadId"] = id
@@ -78,6 +93,15 @@ func (c *Client) Thread(ctx context.Context, method, id string, cfg config.Confi
 	}
 	if json.Unmarshal(r, &v) != nil || v.Thread.ID == "" {
 		return Thread{}, errors.New("Codex 返回的会话无效")
+	}
+	if cfg.Codex.PersonalReply {
+		if err := verifyPersonalReply(r, cfg.Codex.RoutingOnly); err != nil {
+			return v.Thread, err
+		}
+	} else if method == "thread/start" {
+		if err := verifyFullAccessCreation(r); err != nil {
+			return v.Thread, err
+		}
 	}
 	return v.Thread, nil
 }
@@ -142,9 +166,9 @@ func (c *Client) list(ctx context.Context, cwd string, archived bool) ([]Thread,
 func (c *Client) Interrupt(ctx context.Context, thread, turn string) error {
 	if strings.HasPrefix(turn, "desktop-") {
 		// 这是桥接观察 ID，不是桌面真实 turn_id，不能传给另一个 App Server。
-		c.nativeMu.Lock()
+		c.desktopTurnsMu.Lock()
 		stop := c.desktopTurns[thread]
-		c.nativeMu.Unlock()
+		c.desktopTurnsMu.Unlock()
 		if stop != nil {
 			stop()
 		}
@@ -162,7 +186,7 @@ func (c *Client) StartThread(ctx context.Context, cfg config.Config) (Thread, er
 	cfg.WorkDir = workDir
 	thread, err := c.Thread(ctx, "thread/start", "", cfg)
 	if err != nil {
-		return Thread{}, err
+		return thread, err
 	}
 	actual, err := config.ExistingDirectory(thread.Cwd)
 	if err != nil {
@@ -216,6 +240,7 @@ func (c *Client) ForkThread(ctx context.Context, cfg config.Config, id, lastTurn
 	}
 	cfg.WorkDir = ""
 	p := Options(cfg)
+	fullAccessCreation(p)
 	p["threadId"] = id
 	p["excludeTurns"] = true
 	if lastTurnID != "" {
@@ -231,6 +256,9 @@ func (c *Client) ForkThread(ctx context.Context, cfg config.Config, id, lastTurn
 	if json.Unmarshal(raw, &v) != nil || v.Thread.ID == "" {
 		return Thread{}, errors.New("Codex 返回的分叉会话无效")
 	}
+	if err := verifyFullAccessCreation(raw); err != nil {
+		return v.Thread, err
+	}
 	actual, e := config.ExistingDirectory(v.Thread.Cwd)
 	if e != nil {
 		return Thread{}, e
@@ -240,6 +268,7 @@ func (c *Client) ForkThread(ctx context.Context, cfg config.Config, id, lastTurn
 }
 
 type TurnHooks struct {
+	AllowSteer          bool
 	Model, Effort       string
 	RequestID           string
 	DraftRecoveryNeeded func()
@@ -256,20 +285,14 @@ func (c *Client) Turn(ctx context.Context, threadID, text string, progress ...fu
 }
 
 func (c *Client) TurnWithHooks(ctx context.Context, threadID, text string, hooks TurnHooks) (string, error) {
-	if hooks.Model != "" {
+	if hooks.Model != "" || c.desktopMode() {
 		return c.selectedModelTurn(ctx, threadID, text, hooks)
-	}
-	if c.runtimeConfig.Codex.SubmissionMode == "native_queue" || c.runtimeConfig.Codex.SubmissionMode == "desktop_queue" {
-		return c.desktopQueueTurn(ctx, threadID, text, hooks)
 	}
 	if hooks.BeforeSubmit != nil {
 		path, offset := findDesktopRollout(c.runtimeConfig.Codex.Home, threadID)
 		if err := hooks.BeforeSubmit(path, offset); err != nil {
 			return "", err
 		}
-	}
-	if c.transport != nil {
-		return c.nativeTurn(ctx, threadID, text)
 	}
 	raw, err := c.Call(ctx, "turn/start", map[string]any{
 		"threadId": threadID,

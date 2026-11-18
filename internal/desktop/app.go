@@ -10,7 +10,7 @@ import (
 
 	wruntime "github.com/wailsapp/wails/v2/pkg/runtime"
 	"im-agent/internal/channels"
-	"im-agent/internal/channels/feishu"
+	"im-agent/internal/channels/builtin"
 	"im-agent/internal/codex"
 	"im-agent/internal/config"
 	"im-agent/internal/daemon"
@@ -47,7 +47,7 @@ func (a *App) Startup(parent context.Context) {
 	a.mu.Lock()
 	defer a.mu.Unlock()
 	a.ctx, a.cancel = context.WithCancel(parent)
-	if e := feishu.Register(a.registry); e != nil {
+	if e := builtin.Register(a.registry); e != nil {
 		a.initError = "渠道注册失败"
 		return
 	}

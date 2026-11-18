@@ -12,7 +12,7 @@ import (
 	"syscall"
 
 	"im-agent/internal/channels"
-	"im-agent/internal/channels/feishu"
+	"im-agent/internal/channels/builtin"
 	"im-agent/internal/daemon"
 	"im-agent/internal/preferences"
 	"im-agent/internal/service"
@@ -41,7 +41,7 @@ func run() error {
 		return daemon.Run(ctx, *dir)
 	}
 	registry := channels.NewRegistry()
-	if e = feishu.Register(registry); e != nil {
+	if e = builtin.Register(registry); e != nil {
 		return e
 	}
 	p, e := preferences.New(*dir, registry)

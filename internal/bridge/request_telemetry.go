@@ -64,7 +64,7 @@ func (bridge *Bridge) collectRequestTelemetry(parent context.Context, candidate 
 			snapshot.Issue, delay = "state_invalid", time.Minute
 		} else {
 			readCtx, cancel := context.WithTimeout(parent, 2*time.Second)
-			updated, position, done, readErr := bridge.codex.ReadRequestTelemetry(readCtx, candidate.ThreadID, candidate.Path, candidate.Offset, candidate.UserItemID, state)
+			updated, position, done, readErr := bridge.engineForThread(candidate.ThreadID).ReadRequestTelemetry(readCtx, candidate.ThreadID, candidate.Path, candidate.Offset, candidate.UserItemID, state)
 			cancel()
 			if readErr != nil {
 				snapshot.Issue, delay = "read_failed", time.Minute
@@ -77,7 +77,7 @@ func (bridge *Bridge) collectRequestTelemetry(parent context.Context, candidate 
 	// 桌面仍在生成的公开文字可能尚未落盘。仅取已关联的精确轮次。
 	if !finished && snapshot.TurnID != "" && snapshot.EndedAt == 0 && snapshot.Issue != "identity_conflict" {
 		liveCtx, stop := context.WithTimeout(parent, 8*time.Second)
-		turn, liveErr := bridge.codex.ReadControlTurn(liveCtx, candidate.ThreadID, snapshot.TurnID)
+		turn, liveErr := bridge.engineForThread(candidate.ThreadID).ReadControlTurn(liveCtx, candidate.ThreadID, snapshot.TurnID)
 		stop()
 		if liveErr == nil {
 			text := []rune(bridge.presentationFilter().Text(turn.Preview))
@@ -87,6 +87,7 @@ func (bridge *Bridge) collectRequestTelemetry(parent context.Context, candidate 
 			preview := string(text)
 			if preview != "" && preview != snapshot.Preview {
 				snapshot.Preview, snapshot.PreviewAt = preview, time.Now().UnixMilli()
+				snapshot.PreviewScope = ""
 			}
 			if turn.Status != "inProgress" {
 				snapshot.Outcome = turn.Status
@@ -109,7 +110,7 @@ func (bridge *Bridge) collectRequestTelemetry(parent context.Context, candidate 
 	if err != nil || !saved {
 		return
 	}
-	bridge.codex.NotifyObservedTurnFailure(candidate.ThreadID, candidate.TurnRef, verifiedTerminal)
+	bridge.engineForThread(candidate.ThreadID).NotifyObservedTurnFailure(candidate.ThreadID, candidate.TurnRef, verifiedTerminal)
 	report, err := bridge.store.RequestTelemetry(candidate.EventID, candidate.ThreadID, candidate.AddressKey)
 	if err != nil || report.Revision <= candidate.PresentedRevision {
 		return
