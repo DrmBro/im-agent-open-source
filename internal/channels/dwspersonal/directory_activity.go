@@ -39,11 +39,49 @@ func parseDirectoryTime(raw json.RawMessage) int64 {
 	return 0
 }
 func (c *Client) startDirectoryJobs(ctx context.Context) func() {
-	jobs := queue.New(ctx, 4, 256)
+	background, cancel := context.WithCancel(ctx)
+	jobs := queue.New(background, 4, 256)
 	c.mu.Lock()
 	c.directoryJobs = jobs
 	c.mu.Unlock()
-	return func() { c.mu.Lock(); c.directoryJobs = nil; c.mu.Unlock(); jobs.Wait() }
+	directoryDone, activityDone := make(chan struct{}), make(chan struct{})
+	go func() {
+		defer close(directoryDone)
+		c.refreshGroupDirectory(background)
+		ticker := time.NewTicker(5 * time.Minute)
+		defer ticker.Stop()
+		for {
+			select {
+			case <-background.Done():
+				return
+			case <-ticker.C:
+				c.refreshGroupDirectory(background)
+			}
+		}
+	}()
+	go func() {
+		defer close(activityDone)
+		c.readDirectoryActivityIndex(background)
+		ticker := time.NewTicker(time.Minute)
+		defer ticker.Stop()
+		for {
+			select {
+			case <-background.Done():
+				return
+			case <-ticker.C:
+				c.readDirectoryActivityIndex(background)
+			}
+		}
+	}()
+	return func() {
+		cancel()
+		c.mu.Lock()
+		c.directoryJobs = nil
+		c.mu.Unlock()
+		<-directoryDone
+		<-activityDone
+		jobs.Wait()
+	}
 }
 
 // 会话窗口只用于补充已知时间，不把满页窗口当成完整群目录。
@@ -132,7 +170,6 @@ func (c *Client) scheduleDirectoryActivity(id string) {
 	}
 }
 func (c *Client) sortDirectory(ctx context.Context, groups []im.DirectoryGroup) []im.DirectoryGroup {
-	c.readDirectoryActivityIndex(ctx)
 	for i := range groups {
 		g := &groups[i]
 		if g.LastMessageAt > 0 {

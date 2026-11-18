@@ -3,11 +3,11 @@
 (() => {
  const root=document.getElementById('message-forward');
  if(!root)return;
- const body=node('div'),load=node('button','btn','加载会话与钉钉群');load.type='button';root.append(load,body);
+ const body=node('div'),load=node('button','btn','加载会话与群缓存');load.type='button';root.append(load,body);
  let threads=[],categories=[],messages=[],before='',cursorStack=[],loading=false,generation=0,built=false;
  let selectedGroup=null,directoryGeneration=0,searchGeneration=0,searchTimer;
  const group=node('details','forward-group-picker'),groupLabel=node('summary','','请选择目标群'),groupSearch=node('input'),groupTree=node('div','forward-group-tree');
- groupSearch.type='search';groupSearch.placeholder='搜索全部群名称';group.append(groupLabel,groupSearch,groupTree);
+ groupSearch.type='search';groupSearch.placeholder='搜索全部群名称';group.append(groupLabel,node('p','muted','读取本机群缓存；后台每 5 分钟更新目录，每分钟更新最近消息时间。'),groupSearch,groupTree);
  const info=node('p','muted'),search=node('input'),source=node('select'),message=node('select'),preview=node('textarea','board-document'),connection=node('select'),older=node('button','btn small','更早消息'),newer=node('button','btn small','返回较新消息'),send=node('button','btn primary','预览并投递'),records=node('div');
  search.type='search';search.placeholder='搜索 Codex 会话名称或 ID';preview.rows=12;preview.maxLength=24000;older.type=newer.type=send.type='button';
  const label=(text,control)=>{const wrap=node(control===group?'div':'label','field');wrap.append(node('span','',text),control);return wrap;};

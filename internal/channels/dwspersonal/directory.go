@@ -15,7 +15,7 @@ type groupDirectoryCache struct {
 	Groups []im.DirectoryGroup
 }
 
-func (c *Client) GroupCategories(ctx context.Context) ([]im.GroupCategory, error) {
+func (c *Client) fetchGroupCategories(ctx context.Context) ([]im.GroupCategory, error) {
 	raw, err := c.run(ctx, "", "chat", "+category-list")
 	if err != nil {
 		return nil, err
@@ -45,13 +45,7 @@ func (c *Client) GroupCategories(ctx context.Context) ([]im.GroupCategory, error
 	}
 	return append(out, im.GroupCategory{ID: "all", Name: "全部群（含未分组）"}), nil
 }
-func (c *Client) CategoryGroups(ctx context.Context, category string) ([]im.DirectoryGroup, error) {
-	if cached, ok := c.directoryCache.Load(category); ok {
-		v := cached.(groupDirectoryCache)
-		if time.Since(v.At) < time.Minute {
-			return c.sortDirectory(ctx, append([]im.DirectoryGroup{}, v.Groups...)), nil
-		}
-	}
+func (c *Client) fetchCategoryGroups(ctx context.Context, category string) ([]im.DirectoryGroup, error) {
 	if category == "pinned" {
 		groups, err := c.pinnedGroups(ctx)
 		if err != nil {
@@ -127,4 +121,35 @@ func (c *Client) CategoryGroups(ctx context.Context, category string) ([]im.Dire
 	}
 	c.directoryCache.Store(category, groupDirectoryCache{time.Now(), out})
 	return c.sortDirectory(ctx, append([]im.DirectoryGroup{}, out...)), nil
+}
+
+// 页面只读取本机快照；远端请求由连接生命周期内的定时任务负责。
+func (c *Client) GroupCategories(ctx context.Context) ([]im.GroupCategory, error) {
+	if value, ok := c.directoryCache.Load("@categories"); ok {
+		return append([]im.GroupCategory{}, value.([]im.GroupCategory)...), nil
+	}
+	return nil, errors.New("群目录正在后台加载，请稍后重试")
+}
+func (c *Client) CategoryGroups(ctx context.Context, category string) ([]im.DirectoryGroup, error) {
+	if value, ok := c.directoryCache.Load(category); ok {
+		return c.sortDirectory(ctx, append([]im.DirectoryGroup{}, value.(groupDirectoryCache).Groups...)), nil
+	}
+	return nil, errors.New("群目录正在后台加载，请稍后重试")
+}
+func (c *Client) refreshGroupDirectory(ctx context.Context) {
+	categories, err := c.fetchGroupCategories(ctx)
+	if err != nil {
+		if value, ok := c.directoryCache.Load("@categories"); ok {
+			categories = value.([]im.GroupCategory)
+		}
+	} else {
+		c.directoryCache.Store("@categories", categories)
+	}
+	for _, category := range categories {
+		if ctx.Err() != nil {
+			return
+		}
+		// 单个分组失败保留其旧快照，其余分组继续更新。
+		_, _ = c.fetchCategoryGroups(ctx, category.ID)
+	}
 }
