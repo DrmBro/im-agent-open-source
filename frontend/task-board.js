@@ -42,8 +42,7 @@
   if(scope!==nextScope){leave();scope=nextScope;view=null;query.page=1;renderStats();el('board-list').replaceChildren(node('p','muted','正在读取任务…'));el('board-total').textContent='';}
   const request=++generation;pending=true;el('board-list').setAttribute('aria-busy','true');el('board-refresh').disabled=true;
   try{
-   const result=await api().GetTaskBoard({...query});
-   const inbox=await api().GetPersonalInbox();renderPersonalInbox(inbox);if(request!==generation||!current())return;
+   const result=await api().GetTaskBoard({...query});if(request!==generation||!current())return;
    view=result;query.page=result.page;el('board-error').hidden=true;el('board-sync-time').textContent='最近同步 '+stamp(result.captured_at);
    const warnings=[result.warning];if(status.phase!=='running'&&result.counts?.active)warnings.push('桥接当前未运行，进行中仅表示本机最后记录的状态。');el('board-warning').textContent=warnings.filter(Boolean).join('；');el('board-warning').hidden=!warnings.some(Boolean);
    const nextSignature=JSON.stringify([result.items,result.counts,result.total,result.page,result.page_size,query.state,snapshot?.revision,selection]);
