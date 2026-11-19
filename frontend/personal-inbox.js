@@ -119,6 +119,19 @@
    create.onclick=()=>startSession(ids());
    update();
    content.append(create);
+   if(shown.length>=2&&shown.length<=24){
+    const choices=node('select');choices.setAttribute('aria-label','重新归并当前显示的消息');
+    choices.append(node('option','','调整事项数…'));
+    for(let n=1;n<=shown.length;n++){
+     const option=node('option','','归并为 '+n+' 件');option.value=String(n);choices.append(option);
+    }
+    choices.onchange=()=>{
+     const count=Number(choices.value);choices.selectedIndex=0;
+     if(!count)return;
+     task(async()=>{await api().ReviewPersonalInbox({action:'regroup',ids:shown.map(x=>x.id),count});await refresh(true);});
+    };
+    content.append(choices);
+   }
    for(const messages of groupTopics(shown)){
     content.append(messages[0].topic_id?topicCard(messages,update):messageRow(messages[0],update));
    }

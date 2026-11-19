@@ -11,6 +11,7 @@ import (
 )
 
 type PersonalInboxAction struct {
+	Count  int      `json:"count,omitempty"`
 	IDs    []string `json:"ids,omitempty"`
 	ID     string   `json:"id"`
 	Action string   `json:"action"`
@@ -23,6 +24,8 @@ func (b *Bridge) ReviewPersonalInbox(ctx context.Context, a PersonalInboxAction)
 			return b.CreatePersonalInboxSession(ctx, a.IDs...)
 		}
 		return b.CreatePersonalInboxSession(ctx, a.ID)
+	case "regroup":
+		return b.regroupInbox(ctx, a.IDs, a.Count)
 	case "ignore":
 		return b.IgnorePersonalInbox(a.ID)
 	default:

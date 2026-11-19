@@ -194,7 +194,7 @@ func (a *API) ReviewPersonalInbox(x bridge.PersonalInboxAction) error {
 	}
 	c, p := a.app.controller, a.app.ctx
 	a.app.mu.Unlock()
-	ctx, cancel := context.WithTimeout(p, 30*time.Second)
+	ctx, cancel := context.WithTimeout(p, 75*time.Second)
 	defer cancel()
 	return c.ReviewPersonalInbox(ctx, x)
 }

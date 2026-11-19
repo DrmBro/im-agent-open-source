@@ -14,7 +14,7 @@ type InboxTopic struct {
 }
 
 // 归类仅标注仍待处理的原消息，不改变任务和收件状态。
-func (s *Store) SaveInboxTopics(ctx context.Context, topics []InboxTopic) error {
+func (s *Store) SaveInboxTopics(ctx context.Context, topics []InboxTopic, replace bool) error {
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
 		return err
@@ -22,6 +22,11 @@ func (s *Store) SaveInboxTopics(ctx context.Context, topics []InboxTopic) error 
 	defer tx.Rollback()
 	for _, topic := range topics {
 		for _, id := range topic.Messages {
+			if replace {
+				if _, err = tx.ExecContext(ctx, "DELETE FROM inbox_topics WHERE event_id=? AND EXISTS(SELECT 1 FROM personal_inbox WHERE id=? AND state='new')", id, id); err != nil {
+					return err
+				}
+			}
 			_, err = tx.ExecContext(ctx, `INSERT INTO inbox_topics(event_id,topic_id,title)
 SELECT id,?,? FROM personal_inbox WHERE id=? AND state='new' ON CONFLICT(event_id) DO NOTHING`, topic.ID, topic.Title, id)
 			if err != nil {
