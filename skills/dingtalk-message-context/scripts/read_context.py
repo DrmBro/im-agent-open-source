@@ -14,11 +14,7 @@ def readonly(path):
     return sqlite3.connect(path.resolve().as_uri() + '?mode=ro', uri=True, timeout=5)
 
 
-def sources(args):
-    if args.group or args.peer:
-        if not args.profile:
-            raise ValueError('请指定来源账号 --profile')
-        return [(args.profile, args.group, args.peer, args.time, None)]
+def bound_sources(event=None, thread=None):
     base = Path.home() / 'Library/Application Support/IM Agent'
     with readonly(base / 'desktop.sqlite') as db:
         config = json.loads(db.execute('SELECT body FROM desktop_config WHERE id=1').fetchone()[0])
@@ -27,8 +23,8 @@ def sources(args):
         rows = db.execute("""SELECT p.chat,p.is_direct,p.user_id,p.received_at,p.payload
             FROM personal_inbox p LEFT JOIN inbound_messages i ON i.event_id=p.id
             WHERE p.channel='dingtalk_personal' AND """ +
-            ('p.id=?' if args.event else 'i.thread_id=?') + ' ORDER BY p.received_at DESC',
-            (args.event or args.thread,)).fetchall()
+            ('p.id=?' if event else 'i.thread_id=?') + ' ORDER BY p.received_at DESC',
+            (event or thread,)).fetchall()
     if not rows:
         raise ValueError('未找到本机钉钉来源，请核对收件 ID 或提供目标对话')
     out = []
@@ -36,9 +32,24 @@ def sources(args):
         profile, marker, target = chat[len('account:'):].rpartition(':peer:' if direct else ':group:')
         if not chat.startswith('account:') or not profile or not marker or not target or (direct and user != target):
             raise ValueError('无法核对来源对话')
-        moment = datetime.fromtimestamp(received, SHANGHAI) + timedelta(seconds=1 if args.direction=='older' else -1)
         out.append((profile, None if direct else target, target if direct else None,
-                    args.time or moment.strftime('%Y-%m-%d %H:%M:%S'), json.loads(payload).get('ConversationID')))
+                    received, json.loads(payload).get('ConversationID')))
+    return out
+
+
+def dws_binary():
+    return shutil.which('dws') or str(Path.home()/'.local/bin/dws')
+
+
+def sources(args):
+    if args.group or args.peer:
+        if not args.profile:
+            raise ValueError('请指定来源账号 --profile')
+        return [(args.profile, args.group, args.peer, args.time, None)]
+    out = []
+    for profile, group, peer, received, conversation in bound_sources(args.event, args.thread):
+        moment = datetime.fromtimestamp(received, SHANGHAI) + timedelta(seconds=1 if args.direction=='older' else -1)
+        out.append((profile, group, peer, args.time or moment.strftime('%Y-%m-%d %H:%M:%S'), conversation))
     return list(dict.fromkeys(out))
 
 
@@ -48,7 +59,7 @@ def excerpt(m):
 
 
 def read(args):
-    binary = shutil.which('dws') or str(Path.home()/'.local/bin/dws')
+    binary = dws_binary()
     seen = set()
     for profile, group, peer, at, conversation in sources(args):
         cmd = [binary,'--profile',profile,'--format','json','chat','message','list',
