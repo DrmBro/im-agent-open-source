@@ -61,8 +61,15 @@ text_hash TEXT NOT NULL,created_at INTEGER NOT NULL);`)
 }
 
 // 从已封存的模型输出补建待审记录，覆盖完成后进程退出、尚未来得及生成草稿的情况。
-func (s *Store) PersonalReviewCandidates(thread string) (map[string]string, error) {
-	rows, err := s.db.Query(`SELECT r.event_id,p.body FROM request_results r
+type ReviewCandidate struct {
+	Body    string
+	Natural bool
+	Request string
+}
+
+func (s *Store) PersonalReviewCandidates(thread string) (map[string]ReviewCandidate, error) {
+	rows, err := s.db.Query(`SELECT r.event_id,p.body,coalesce(json_array_length(i.payload,'$.inbox_sources'),0)>0,coalesce(json_extract(i.payload,'$.Text'),'') FROM request_results r
+LEFT JOIN inbound_messages i ON i.event_id=r.event_id
 JOIN request_result_replies m ON m.event_id=r.event_id
 JOIN live_mirror_parts p ON p.thread_id=m.thread_id AND p.item_id=m.item_id
 JOIN live_mirror_entries e ON e.thread_id=p.thread_id AND e.item_id=p.item_id
@@ -75,20 +82,26 @@ ORDER BY r.created_at,e.seq,p.part_index`, thread)
 		return nil, err
 	}
 	defer rows.Close()
-	out := map[string]string{}
+	out := map[string]ReviewCandidate{}
 	for rows.Next() {
 		var event, body string
-		if err = rows.Scan(&event, &body); err != nil {
+		var natural bool
+		var request string
+		if err = rows.Scan(&event, &body, &natural, &request); err != nil {
 			return nil, err
 		}
-		if out[event] == "\x00" {
+		candidate := out[event]
+		candidate.Natural = natural
+		candidate.Request = request
+		if candidate.Body == "\x00" {
 			continue
 		}
-		if len(out[event])+len(body) > 64000 {
-			out[event] = "\x00"
+		if len(candidate.Body)+len(body) > 64000 {
+			candidate.Body = "\x00"
 		} else {
-			out[event] += body
+			candidate.Body += body
 		}
+		out[event] = candidate
 	}
 	return out, rows.Err()
 }

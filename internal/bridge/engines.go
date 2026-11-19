@@ -3,6 +3,7 @@ package bridge
 import (
 	"im-agent/internal/codex"
 	"im-agent/internal/config"
+	"im-agent/internal/im"
 	"im-agent/internal/store"
 )
 
@@ -22,6 +23,11 @@ func (b *Bridge) configForConnection(connection string) config.Config {
 	if config.IsPersonalChannel(b.conn(connection).Type) {
 		cfg.Codex.PersonalReply = true
 	}
+	return cfg
+}
+func (b *Bridge) configForMessage(m im.Message) config.Config {
+	cfg := b.configForConnection(m.Address.Connection)
+	cfg.Codex.InboxSources = m.InboxSources
 	return cfg
 }
 func (b *Bridge) engineForThread(thread string) *codex.Client {

@@ -26,14 +26,15 @@ func (a Address) IsTopic() bool   { return a.TopicID != "" }
 func (a Address) Parent() Address { a.TopicID = ""; a.RootMessageID = ""; return a }
 
 type Message struct {
-	Followup             bool   `json:"Followup,omitempty"`
-	SelfMessage          bool   `json:"SelfMessage,omitempty"`
-	FollowupTarget       string `json:"FollowupTarget,omitempty"`
-	PlatformID           string `json:"PlatformID,omitempty"`
-	QuotedID             string `json:"QuotedID,omitempty"`
-	QuotedConversationID string `json:"QuotedConversationID,omitempty"`
-	ConversationID       string `json:"ConversationID,omitempty"`
-	UserName             string `json:"UserName,omitempty"`
+	InboxSources         []string `json:"inbox_sources,omitempty"` // 手动收件会话的来源记录，供后台定位上下文。
+	Followup             bool     `json:"Followup,omitempty"`
+	SelfMessage          bool     `json:"SelfMessage,omitempty"`
+	FollowupTarget       string   `json:"FollowupTarget,omitempty"`
+	PlatformID           string   `json:"PlatformID,omitempty"`
+	QuotedID             string   `json:"QuotedID,omitempty"`
+	QuotedConversationID string   `json:"QuotedConversationID,omitempty"`
+	ConversationID       string   `json:"ConversationID,omitempty"`
+	UserName             string   `json:"UserName,omitempty"`
 	Attachments          []Attachment
 	Address              Address
 	ID, UserID, Text     string

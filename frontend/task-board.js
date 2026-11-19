@@ -66,7 +66,7 @@
   finally{if(request===detailGeneration)box.removeAttribute('aria-busy');}
  }
  function renderPersonalReview(box,r,item){
-  const labels={ready:'可以处理',needs_info:'需要补充信息',manual:'需要本人处理'};
+  const labels={draft:'回复待核对',ready:'可以处理',needs_info:'需要补充信息',manual:'需要本人处理'};
   box.append(node('h4','','处理判断：'+(labels[r.assessment]||'需要本人核对')),node('p','',r.reason),node('p','muted','发送人：'+(r.peer_name||r.peer)+' · '+r.peer));
   const groupTarget=r.target?.includes(':group:');const targetLabel=groupTarget?'原群会话 '+r.target.split(':group:')[1]:'原私聊 '+(r.peer_name||r.peer);box.append(node('p','notice','批准后回复到：'+targetLabel));
   const original=node('pre');original.style.whiteSpace='pre-wrap';original.style.overflowWrap='anywhere';original.textContent=r.input||'原文已清理';box.append(node('h4','','收到的消息'),original);

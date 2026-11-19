@@ -20,12 +20,14 @@ type Config struct {
 	Watch       Watch        `json:"watch"`
 }
 type Codex struct {
-	PersonalReply  bool   `json:"-"` // 仅运行时使用，个人收件不继承 IM 控制会话的 Full Access。
-	InboxTopics    bool   `json:"-"`
-	InboxTriage    bool   `json:"-"`
-	InboxModel     string `json:"inbox_model,omitempty"`
-	RoutingOnly    bool   `json:"-"`
-	SubmissionMode string `json:"submission_mode"`
+	InboxSources   []string `json:"-"`
+	AssessDraft    bool     `json:"-"`
+	PersonalReply  bool     `json:"-"` // 仅运行时使用，个人收件不继承 IM 控制会话的 Full Access。
+	InboxTopics    bool     `json:"-"`
+	InboxTriage    bool     `json:"-"`
+	InboxModel     string   `json:"inbox_model,omitempty"`
+	RoutingOnly    bool     `json:"-"`
+	SubmissionMode string   `json:"submission_mode"`
 	// 以下三个字段仅用于读取旧配置；正式提交不操作输入框，界面不再提供无效开关。
 	AutoSwitchThread        bool   `json:"auto_switch_thread"`
 	PreserveDesktopDraft    bool   `json:"preserve_desktop_draft"`

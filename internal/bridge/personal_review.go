@@ -9,6 +9,7 @@ import (
 	"strings"
 	"time"
 
+	"im-agent/internal/codex"
 	"im-agent/internal/config"
 	"im-agent/internal/im"
 	"im-agent/internal/store"
@@ -49,11 +50,19 @@ func (b *Bridge) preparePersonalReviews(ctx context.Context, s store.Session) er
 	if err != nil {
 		return err
 	}
-	for event, raw := range candidates {
-		r := parseReplyAssessment(raw)
+	for event, candidate := range candidates {
 		autoAfter := int64(0)
 		if config.Contains(b.personalAutoPeers(s), s.Owner) {
 			autoAfter = b.personalStartedAt
+		}
+		var r replyAssessment
+		if candidate.Natural {
+			r = b.reviewNaturalDraft(ctx, s, candidate, autoAfter > 0)
+		} else {
+			r = parseReplyAssessment(candidate.Body)
+		}
+		if ctx.Err() != nil {
+			return ctx.Err()
 		}
 		if err = b.store.PutPersonalReview(s.ThreadID, event, r.Assessment, r.Reason, r.Reply, autoAfter); err != nil {
 			return err
@@ -73,6 +82,31 @@ func (b *Bridge) preparePersonalReviews(ctx context.Context, s store.Session) er
 		}
 	}
 	return nil
+}
+
+// 已启用自动回复的联系人仍需后台判断草稿是否可以直接发送。
+func (b *Bridge) reviewNaturalDraft(ctx context.Context, s store.Session, c store.ReviewCandidate, assess bool) replyAssessment {
+	draft := strings.TrimSpace(c.Body)
+	if draft == "" || draft == "\x00" || len(draft) > 24000 {
+		return replyAssessment{Assessment: "manual", Reason: "请在原会话核对完整输出并编辑回复。"}
+	}
+	r := replyAssessment{Assessment: "draft", Reason: "请核对回复草稿。", Reply: draft}
+	if !assess {
+		return r
+	}
+	cfg := b.configForConnection(s.Address.Connection)
+	cfg.Codex.AssessDraft = true
+	input, _ := json.Marshal(map[string]string{"request": c.Request, "draft": draft})
+	data, err := codex.ClassifyPersonal(ctx, cfg, string(input))
+	var decision replyAssessment
+	if err == nil && json.Unmarshal([]byte(data), &decision) == nil && strings.TrimSpace(decision.Reason) != "" {
+		switch decision.Assessment {
+		case "ready", "manual", "needs_info":
+			r.Assessment = decision.Assessment
+			r.Reason = decision.Reason
+		}
+	}
+	return r
 }
 func (b *Bridge) personalParts(text string) []string {
 	max := b.cfg.Limits.MaxMessageChars - 80

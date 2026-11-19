@@ -327,7 +327,7 @@ func (b *Bridge) CreatePersonalInboxSession(ctx context.Context, ids ...string) 
 	}
 	s, e := b.store.ByChat(address)
 	if errors.Is(e, sql.ErrNoRows) {
-		t, err := b.engineForConnection(m.Address.Connection).StartThread(ctx, b.configForConnection(m.Address.Connection))
+		t, err := b.engineForConnection(m.Address.Connection).StartThread(ctx, b.configForMessage(m))
 		if err != nil {
 			return err
 		}
@@ -476,7 +476,7 @@ func (b *Bridge) runTurn(ctx context.Context, adapter im.Adapter, s store.Sessio
 		}
 	}
 	_ = b.store.EventStage(msg.ID, s.Address.Key(), "resuming", "")
-	resumed, err := b.engineForThread(s.ThreadID).ResumeThread(turnCtx, b.configForConnection(s.Address.Connection), s.ThreadID)
+	resumed, err := b.engineForThread(s.ThreadID).ResumeThread(turnCtx, b.configForMessage(msg), s.ThreadID)
 	if err != nil {
 		return err
 	}

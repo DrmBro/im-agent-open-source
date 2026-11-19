@@ -7,7 +7,6 @@ import (
 	"im-agent/internal/im"
 	"im-agent/internal/store"
 	"strings"
-	"time"
 )
 
 type PersonalInboxAction struct {
@@ -79,25 +78,20 @@ func (b *Bridge) inboxSessionInput(ctx context.Context, ids []string) (im.Messag
 		if sender == "" {
 			sender = x.User
 		}
-		fmt.Fprintf(&prompt, "【%s · %s · 来源收件 ID %s】\n%s\n", time.Unix(x.Received, 0).Format("2006-01-02 15:04"), sender, x.ID, x.Text)
-		if a := x.Analysis; a != nil && !a.Failed {
-			fmt.Fprintf(&prompt, "分析理由：%s\n", a.Reason)
-			if a.CompletedRequest != "" {
-				fmt.Fprintf(&prompt, "补全请求：%s\n", a.CompletedRequest)
-			}
-			for _, e := range a.Evidence {
-				fmt.Fprintf(&prompt, "引用依据：%s\n", e)
-			}
-			if a.Note != "" {
-				fmt.Fprintf(&prompt, "待核对：%s\n", a.Note)
-			}
+		if len(ids) > 1 {
+			fmt.Fprintf(&prompt, "%s：", sender)
+		}
+		prompt.WriteString(x.Text)
+		if a := x.Analysis; a != nil && !a.Failed && strings.TrimSpace(a.CompletedRequest) != "" && strings.TrimSpace(a.CompletedRequest) != strings.TrimSpace(x.Text) {
+			fmt.Fprintf(&prompt, "\n（%s）", a.CompletedRequest)
 		}
 		prompt.WriteByte('\n')
 	}
 	if len(ordered) != len(ids) {
 		return first, nil, errors.New("部分所选消息已不在今日收件列表，请刷新")
 	}
-	first.Text = "请结合以下所选消息的原文和上下文处理其中的请求。模型建议和群聊引文供核对。\n\n" + strings.TrimSpace(prompt.String())
+	first.Text = strings.TrimSpace(prompt.String())
+	first.InboxSources = ordered
 	if len([]rune(first.Text)) > b.cfg.Limits.MaxInputChars {
 		return first, nil, errors.New("所选上下文超过输入上限，请减少勾选消息")
 	}
