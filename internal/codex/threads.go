@@ -324,3 +324,20 @@ func (c *Client) Archive(ctx context.Context, threadID string) error {
 	}
 	return err
 }
+
+// ReleaseThread 解除当前 App Server 对会话的订阅，允许桌面继续已结束的轮次。
+func (c *Client) ReleaseThread(ctx context.Context, id string) error {
+	raw, err := c.Call(ctx, "thread/unsubscribe", map[string]string{"threadId": id})
+	if err != nil {
+		return err
+	}
+	var reply struct{ Status string }
+	if json.Unmarshal(raw, &reply) != nil {
+		return errors.New("会话释放回执无效")
+	}
+	switch reply.Status {
+	case "unsubscribed", "notLoaded", "notSubscribed":
+		return nil
+	}
+	return errors.New("会话释放状态未知")
+}

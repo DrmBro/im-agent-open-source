@@ -22,17 +22,48 @@
    default:return true;
   }
  }
- function startSession(ids){
+ const feedback=document.getElementById('inbox-submit-status');
+ let awaitingReturn=false;
+ function showReceipts(rows){
+  const threads=new Map();
+  for(const row of rows){
+   if(!row.thread_id)continue;
+   if(!threads.has(row.thread_id))threads.set(row.thread_id,[]);
+   threads.get(row.thread_id).push(row);
+  }
+  const panel=document.getElementById('inbox-receipts'),box=document.getElementById('inbox-receipt-list');
+  panel.hidden=!threads.size;box.replaceChildren();
+  for(const batch of [...threads.values()].sort((a,b)=>b[0].updated-a[0].updated)){
+   const titles=[...new Set(batch.map(x=>x.topic_title||x.text.slice(0,42)))];
+   box.append(node('p','',time(batch[0].updated)+' · '+titles.join('、')+' · '+batch.length+' 条'),node('code','',batch[0].thread_id));
+  }
+ }
+ function startSession(ids,button){
+  if(busy||awaitingReturn||!ids.length)return;
   return task(async()=>{
-   await api().ReviewPersonalInbox({action:'start',ids});
-   note(ids.length===1?'已用这条消息和它的上下文创建会话。':'已用所选消息和上下文创建会话。');
-   await refresh(true);
+   awaitingReturn=true;
+   const subjects=[...new Set(items.filter(x=>ids.includes(x.id)).map(x=>x.topic_title||x.text.slice(0,42)))].join('、');
+   button.disabled=true;button.textContent='正在创建…';
+   feedback.hidden=false;feedback.textContent='正在创建会话 · '+subjects+'（'+ids.length+' 条）';
+   try{
+    await api().ReviewPersonalInbox({action:'start',ids});
+    feedback.textContent='会话已创建 · '+subjects+'（'+ids.length+' 条）';
+   }catch(e){
+    feedback.textContent='创建回执未确认 · '+text(e)+'。请先核对已创建的会话。';
+   }finally{
+    list().hidden=true;
+    await refresh(true);
+    document.getElementById('inbox-receipts').open=true;
+    const back=node('button','btn small','返回待处理消息');back.type='button';
+    back.onclick=()=>{awaitingReturn=false;feedback.hidden=true;list().hidden=false;renderList();};
+    feedback.append(back);
+   }
   });
  }
  function startButton(label,rows){
   const button=node('button','btn small',label);
   button.type='button';
-  button.onclick=()=>startSession(rows.map(x=>x.id));
+  button.onclick=()=>startSession(rows.map(x=>x.id),button);
   return button;
  }
  function messageRow(x,onSelection){
@@ -116,7 +147,7 @@
    create.type='button';
    const ids=()=>shown.filter(selected).map(x=>x.id);
    const update=()=>{const n=ids().length;create.disabled=!n;create.textContent=n?'合并勾选消息（'+n+' 条）':'勾选消息以创建会话';};
-   create.onclick=()=>startSession(ids());
+   create.onclick=()=>startSession(ids(),create);
    update();
    content.append(create);
    if(shown.length>=2&&shown.length<=24){
@@ -170,6 +201,7 @@
   const button=document.getElementById('personal-inbox-refresh');if(button)button.disabled=true;
   try{
    const rows=await api().GetPersonalInbox();if(g!==generation||!current())return;
+   showReceipts(rows||[]);
    items=(rows||[]).filter(x=>x.state==='new').sort((a,b)=>b.received-a.received);
    const next=JSON.stringify(items);
    if(force||next!==signature){signature=next;renderList();}

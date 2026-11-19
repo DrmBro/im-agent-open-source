@@ -455,6 +455,16 @@ func (b *Bridge) runTurn(ctx context.Context, adapter im.Adapter, s store.Sessio
 		return err
 	}
 	defer finish()
+	// 已确认结束或确定未提交时才释放；未知或仍在执行的轮次保留所有权。
+	defer func() {
+		if adapter.Capabilities().PersonalInbox && (failureKind == requestNotSent || failureKind == requestExecutionFailed || failureKind == requestReplyUnknown || runErr == nil) {
+			op, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+			defer cancel()
+			if err := b.engineForThread(s.ThreadID).ReleaseThread(op, s.ThreadID); err != nil {
+				b.log.Warn("业务会话释放未获确认", "thread", s.ThreadID, "error", diagnostics.Error(err))
+			}
+		}
+	}()
 	archived, err := b.engineForThread(s.ThreadID).Archived(turnCtx)
 	if err != nil {
 		return diagnostics.UserError("无法确认归档状态，暂不恢复该会话")

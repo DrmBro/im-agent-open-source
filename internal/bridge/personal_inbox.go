@@ -79,7 +79,7 @@ func (b *Bridge) inboxSessionInput(ctx context.Context, ids []string) (im.Messag
 		if sender == "" {
 			sender = x.User
 		}
-		fmt.Fprintf(&prompt, "【%s · %s】\n%s\n", time.Unix(x.Received, 0).Format("15:04"), sender, x.Text)
+		fmt.Fprintf(&prompt, "【%s · %s · 来源收件 ID %s】\n%s\n", time.Unix(x.Received, 0).Format("2006-01-02 15:04"), sender, x.ID, x.Text)
 		if a := x.Analysis; a != nil && !a.Failed {
 			fmt.Fprintf(&prompt, "分析理由：%s\n", a.Reason)
 			if a.CompletedRequest != "" {
