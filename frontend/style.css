@@ -412,3 +412,6 @@ dialog.danger #confirm-yes{background:var(--danger);border-color:var(--danger)}
 .inbox-summary time{margin-left:auto}
 .inbox-conversation-body{padding:0 12px 14px}
 .inbox-message{margin-top:10px;padding:12px;border-left:2px solid var(--brand-line);background:var(--surface-3);border-radius:4px}
+.inbox-topic{border-top:1px solid var(--border);padding:4px 0 10px}
+.inbox-topic .inbox-summary{padding:10px 0;flex-wrap:wrap}
+.inbox-topic details[open]>.inbox-summary::before{content:'▾'}

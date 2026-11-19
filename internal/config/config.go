@@ -21,6 +21,7 @@ type Config struct {
 }
 type Codex struct {
 	PersonalReply  bool   `json:"-"` // 仅运行时使用，个人收件不继承 IM 控制会话的 Full Access。
+	InboxTopics    bool   `json:"-"`
 	InboxTriage    bool   `json:"-"`
 	InboxModel     string `json:"inbox_model,omitempty"`
 	RoutingOnly    bool   `json:"-"`

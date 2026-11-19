@@ -10,6 +10,8 @@ import (
 )
 
 type PersonalInboxItem struct {
+	TopicID    string         `json:"topic_id,omitempty"`
+	TopicTitle string         `json:"topic_title,omitempty"`
 	ChatName   string         `json:"chat_name,omitempty"`
 	Analysis   *InboxAnalysis `json:"analysis,omitempty"`
 	ID         string         `json:"id"`
@@ -44,7 +46,10 @@ AND NOT EXISTS (SELECT 1 FROM request_results r WHERE r.event_id=personal_inbox.
 	if e != nil {
 		return e
 	}
-	return s.migrateInboxAnalysis()
+	if err := s.migrateInboxAnalysis(); err != nil {
+		return err
+	}
+	return s.migrateInboxTopics()
 }
 func (s *Store) PutPersonalInbox(m im.Message) error {
 	raw, _ := json.Marshal(m)
@@ -53,7 +58,7 @@ func (s *Store) PutPersonalInbox(m im.Message) error {
 	return e
 }
 func (s *Store) PersonalInbox(ctx context.Context, today int64) ([]PersonalInboxItem, error) {
-	rows, e := s.db.QueryContext(ctx, `SELECT id,connection_id,channel,chat,user_id,user_name,text,received_at,is_direct,mention,quoted,state,coalesce(a.result,'') FROM personal_inbox p LEFT JOIN inbox_analysis a ON a.event_id=p.id WHERE received_at>=? ORDER BY received_at DESC,id`, today)
+	rows, e := s.db.QueryContext(ctx, `SELECT id,connection_id,channel,chat,user_id,user_name,text,received_at,is_direct,mention,quoted,state,coalesce(a.result,''),coalesce(t.topic_id,''),coalesce(t.title,'') FROM personal_inbox p LEFT JOIN inbox_topics t ON t.event_id=p.id LEFT JOIN inbox_analysis a ON a.event_id=p.id WHERE received_at>=? ORDER BY received_at DESC,id`, today)
 	if e != nil {
 		return nil, e
 	}
@@ -63,7 +68,7 @@ func (s *Store) PersonalInbox(ctx context.Context, today int64) ([]PersonalInbox
 		var x PersonalInboxItem
 		var d, m, q int
 		var analysis string
-		if e = rows.Scan(&x.ID, &x.Connection, &x.Channel, &x.Chat, &x.User, &x.UserName, &x.Text, &x.Received, &d, &m, &q, &x.State, &analysis); e != nil {
+		if e = rows.Scan(&x.ID, &x.Connection, &x.Channel, &x.Chat, &x.User, &x.UserName, &x.Text, &x.Received, &d, &m, &q, &x.State, &analysis, &x.TopicID, &x.TopicTitle); e != nil {
 			return nil, e
 		}
 		if analysis != "" {

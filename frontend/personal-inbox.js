@@ -7,7 +7,7 @@
  const text=e=>String(e?.message||e);
  const time=s=>new Date(s*1000).toLocaleTimeString([], {hour:'2-digit',minute:'2-digit'});
  const filter=document.getElementById('inbox-filter');
- const opened=new Set(),selection=new Map();
+ const opened=new Set(),openedTopics=new Set(),selection=new Map();
  const ready=x=>Boolean(x.analysis&&!x.analysis.failed);
  const attention=x=>ready(x)&&x.analysis.attention;
  const selected=x=>selection.has(x.id)?selection.get(x.id):attention(x);
@@ -21,6 +21,19 @@
    case 'failed':return Boolean(x.analysis?.failed);
    default:return true;
   }
+ }
+ function startSession(ids){
+  return task(async()=>{
+   await api().ReviewPersonalInbox({action:'start',ids});
+   note(ids.length===1?'已用这条消息和它的上下文创建会话。':'已用所选消息和上下文创建会话。');
+   await refresh(true);
+  });
+ }
+ function startButton(label,rows){
+  const button=node('button','btn small',label);
+  button.type='button';
+  button.onclick=()=>startSession(rows.map(x=>x.id));
+  return button;
  }
  function messageRow(x,onSelection){
   const row=node('article','inbox-message'),head=node('div','inbox-head');
@@ -49,7 +62,40 @@
    }
    if(a.note)row.append(node('p','muted',a.note));
   }
+  row.append(startButton('单独创建会话',[x]));
   return row;
+ }
+ function groupTopics(rows){
+  const groups=new Map();
+  for(const x of rows){
+   const key=x.topic_id||x.id;
+   if(!groups.has(key))groups.set(key,[]);
+   groups.get(key).push(x);
+  }
+  return Array.from(groups.values());
+ }
+ function topicCard(rows,onSelection){
+  const first=rows[0],card=node('article','inbox-topic');
+  const details=node('details'),head=node('summary','inbox-summary');
+  const needsAttention=rows.some(attention);
+  head.append(node('strong','',first.topic_title),node('span','muted',rows.length+' 条'));
+  if(needsAttention)head.append(node('span','chip accent','需关注'));
+  head.append(node('time','muted',time(first.received)));
+  details.open=openedTopics.has(first.topic_id);
+  details.append(head);
+  const body=node('div');
+  details.append(body);
+  function fill(){
+   if(!body.childElementCount)for(const x of rows)body.append(messageRow(x,onSelection));
+  }
+  if(details.open)fill();
+  details.ontoggle=()=>{
+   if(!details.isConnected)return;
+   if(details.open){openedTopics.add(first.topic_id);fill();}
+   else openedTopics.delete(first.topic_id);
+  };
+  card.append(details,startButton('处理此事项（'+rows.length+' 条）',rows));
+  return card;
  }
  function conversation(key,rows,shown){
   const latest=shown[0],row=node('details','inbox-conversation');
@@ -59,6 +105,7 @@
   head.append(node('strong','',title),node('span','chip',latest.is_direct?'单聊':'群聊'),
    node('span','muted',rows.length+' 条'),node('span',count?'chip accent':'muted',count?'需关注 '+count+' 条':''),
    node('time','muted',time(latest.received)));
+  if(shown.every(x=>x.topic_id))head.insertBefore(node('span','chip',groupTopics(shown).length+' 件事'),head.lastChild);
   row.open=opened.has(key);
   row.append(head);
   const content=node('div','inbox-conversation-body');
@@ -68,14 +115,13 @@
    const create=node('button','btn primary small');
    create.type='button';
    const ids=()=>shown.filter(selected).map(x=>x.id);
-   const update=()=>{const n=ids().length;create.disabled=!n;create.textContent=n?'创建会话（'+n+' 条）':'勾选消息以创建会话';};
-   create.onclick=()=>task(async()=>{
-    await api().ReviewPersonalInbox({action:'start',ids:ids()});
-    note('已创建会话并提交所选消息的上下文。');await refresh(true);
-   });
+   const update=()=>{const n=ids().length;create.disabled=!n;create.textContent=n?'合并勾选消息（'+n+' 条）':'勾选消息以创建会话';};
+   create.onclick=()=>startSession(ids());
    update();
    content.append(create);
-   for(const x of shown)content.append(messageRow(x,update));
+   for(const messages of groupTopics(shown)){
+    content.append(messages[0].topic_id?topicCard(messages,update):messageRow(messages[0],update));
+   }
   }
   if(row.open)showMessages();
   row.ontoggle=()=>{
