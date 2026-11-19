@@ -28,3 +28,5 @@ THIRD_PARTY_NOTICES.txt
 AGENTS.md
 docs/superpowers/
 docs/releases/
+
+__pycache__/

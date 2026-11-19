@@ -51,22 +51,39 @@ cp "$source_app/Contents/Resources/iconfile.icns" "$staging/IM Agent 后台.app/
 /usr/bin/plutil -lint "$staging/IM Agent 后台.app/Contents/Info.plist"
 /usr/bin/codesign --force --sign - "$staging/IM Agent 后台.app"
 /usr/bin/codesign --verify --deep --strict "$staging/IM Agent 后台.app"
-backup=""
-for existing in "$client_app" "$background_app"; do
-  if [[ -e "$existing" || -L "$existing" ]]; then
-    if [[ -z "$backup" ]]; then
-      backup="$(mktemp -d "$destination/.im-agent-backup.XXXXXX")"
-    fi
-    mv "$existing" "$backup/"
+# 交换后旧应用暂存在本次 staging，退出时清理。
+installed=()
+install_app() {
+  local target="$1" incoming="$staging/${1##*/}"
+  if [[ -e "$target" || -L "$target" ]]; then
+    python3 "$project_dir/scripts/swap_macos.py" "$incoming" "$target"
+  else
+    mv "$incoming" "$target"
   fi
-done
-mv "$staging/IM Agent.app" "$client_app"
-mv "$staging/IM Agent 后台.app" "$background_app"
+  installed+=("$target")
+}
+finish_install() {
+  local status=$? i target incoming
+  trap - EXIT
+  if (( status != 0 )); then
+    for ((i=${#installed[@]}-1; i>=0; i--)); do
+      target="${installed[i]}"
+      incoming="$staging/${target##*/}"
+      if [[ -e "$incoming" || -L "$incoming" ]]; then
+        python3 "$project_dir/scripts/swap_macos.py" "$incoming" "$target"
+      else
+        mv "$target" "$incoming"
+      fi
+    done
+  fi
+  rm -rf "$staging"
+  exit "$status"
+}
+trap finish_install EXIT
+install_app "$client_app"
+install_app "$background_app"
 registration="/System/Library/Frameworks/CoreServices.framework/Frameworks/LaunchServices.framework/Support/lsregister"
 "$registration" -f "$client_app"
 "$registration" -f "$background_app"
 printf '已安装：\n%s\n%s\n' "$client_app" "$background_app"
-if [[ -n "$backup" ]]; then
-  printf '旧应用保留于：%s\n' "$backup"
-fi
 printf '仅安装启动入口；不修改登录自启，不停止或重启正在运行的后台。\n'

@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""从完整工作区生成可追溯的本机发布，校验后备份安装并恢复后台。"""
+"""从完整工作区生成可追溯的本机发布，校验后原位安装并恢复后台。"""
 import argparse
 import datetime
 import fcntl
@@ -16,6 +16,7 @@ import subprocess
 import sys
 import time
 import uuid
+from swap_macos import swap_paths
 
 ROOT = Path(__file__).resolve().parent.parent
 
@@ -188,47 +189,28 @@ def deploy(args, release):
             return active == 0 and not any(db.execute('SELECT count(*) FROM ' + table + ' WHERE ' + where).fetchone()[0] for table, where in states.items() if table in tables)
         finally:
             db.close()
-    def backup_database(path, target):
-        src, dst = readonly(path), sqlite3.connect(target)
-        try:
-            src.backup(dst)
-        finally:
-            src.close(); dst.close()
-        target.chmod(0o600)
     stamp = datetime.datetime.now(datetime.timezone.utc).strftime('%Y%m%dT%H%M%SZ') + '-' + uuid.uuid4().hex[:6]
-    backup = base / 'backups' / ('unified-' + stamp)
     staged = application.parent / ('.IM-Agent-updating-' + stamp + '.app')
-    unloaded = swapped = False
+    temporary = stable.with_name('.service-updating-' + stamp)
+    unloaded = swapped = service_swapped = False
     was_running = False
     with (base / 'maintenance.lock').open('a+') as maintenance:
         fcntl.flock(maintenance, fcntl.LOCK_EX | fcntl.LOCK_NB)
         try:
             was_running = call('GET', '/status').get('phase') in ('running', 'starting')
             wait(idle)
-            backup.mkdir(parents=True, mode=0o700)
-            shutil.copy2(stable, backup / 'im-agent-service')
-            shutil.copy2(base / 'service.intent', backup / 'service.intent')
-            shutil.copy2(release / 'manifest.json', backup / 'installed-manifest.json')
             run(['ditto', str(release / 'IM Agent.app'), str(staged)])
             run(['codesign', '--verify', '--deep', '--strict', str(staged)])
-            print('已完成发布校验并准备备份：' + str(backup), flush=True)
+            shutil.copy2(staged / 'Contents/MacOS/im-agent', temporary)
+            temporary.chmod(0o700)
             call('POST', '/stop', 30)
             wait(lambda: call('GET', '/status').get('phase') in ('stopped', 'failed'))
             run(['launchctl', 'bootout', label]); unloaded = True
             wait(lock_free)
-            backup_database(base / 'desktop.sqlite', backup / 'desktop.sqlite')
-            backup_database(business, backup / 'sessions.db')
-            os.rename(application, backup / 'IM Agent.app')
-            try:
-                os.rename(staged, application)
-            except BaseException:
-                os.rename(backup / 'IM Agent.app', application)
-                raise
+            swap_paths(staged, application)
             swapped = True
-            temporary = stable.with_name('.service-updating-' + stamp)
-            shutil.copy2(application / 'Contents/MacOS/im-agent', temporary)
-            temporary.chmod(0o700)
-            os.replace(temporary, stable)
+            swap_paths(temporary, stable)
+            service_swapped = True
             if digest(stable) != manifest['binary_sha256']:
                 raise RuntimeError('安装后的后台摘要不一致')
             run(['launchctl', 'bootstrap', domain, str(agent)]); unloaded = False
@@ -240,10 +222,10 @@ def deploy(args, release):
                 correct = status.get('build', {}).get('source_digest') == manifest['source_digest']
                 connections = status.get('connections', [])
                 return correct and (status.get('phase') == 'running' and bool(connections) and all(row.get('phase') == 'connected' for row in connections) if was_running else status.get('phase') == 'stopped')
-            wait(healthy, 45)
+            wait(healthy, 150)
             save_json(base / 'installed-build.json', manifest)
-            save_json(release / 'deployment.json', {'backup': str(backup), 'source_digest': manifest['source_digest'], 'phase': call('GET', '/status').get('phase')})
-            print('DEPLOY_OK ' + json.dumps({'source_digest': manifest['source_digest'], 'backup': str(backup), 'phase': call('GET', '/status').get('phase')}, ensure_ascii=False), flush=True)
+            save_json(release / 'deployment.json', {'source_digest': manifest['source_digest'], 'phase': call('GET', '/status').get('phase')})
+            print('DEPLOY_OK ' + json.dumps({'source_digest': manifest['source_digest'], 'phase': call('GET', '/status').get('phase')}, ensure_ascii=False), flush=True)
         except BaseException:
             if swapped:
                 try:
@@ -252,10 +234,9 @@ def deploy(args, release):
                         wait(lambda: call('GET', '/status').get('phase') in ('stopped', 'failed'))
                         run(['launchctl', 'bootout', label]); unloaded = True
                     wait(lock_free)
-                    failed = application.parent / ('.IM-Agent-failed-' + stamp + '.app')
-                    os.rename(application, failed)
-                    os.rename(backup / 'IM Agent.app', application)
-                    shutil.copy2(backup / 'im-agent-service', stable)
+                    swap_paths(staged, application)
+                    if service_swapped:
+                        swap_paths(temporary, stable)
                     print('已回退旧程序；升级后的投递账本保留。', flush=True)
                 except BaseException as error:
                     print('程序回退需要核对：' + str(error), flush=True)
@@ -272,6 +253,11 @@ def deploy(args, release):
                 except BaseException:
                     print('旧后台连接恢复需要核对。', flush=True)
             raise
+        finally:
+            if staged.exists():
+                shutil.rmtree(staged)
+            if temporary.exists():
+                temporary.unlink()
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)

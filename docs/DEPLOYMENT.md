@@ -88,7 +88,7 @@ $HOME/Library/Application Support/IM Agent
 | `control.sock`、`control.token` | 仅本机同用户访问的控制接口 |
 | macOS 钥匙串 | 保存用于解开本机凭证密文的主密钥 |
 
-不要复制、发送或上传 `desktop.sqlite`、`runtime/`、日志、钥匙串导出或备份目录。升级前应在本机保留备份；迁移到新机器时需要同时恢复钥匙串访问，否则已有密文无法解密。
+不要复制、发送或上传 `desktop.sqlite`、`runtime/`、日志、钥匙串导出或备份目录。迁移到新机器时需要同时恢复钥匙串访问，否则已有密文无法解密。
 
 ## 5. 首次配置
 
@@ -166,15 +166,6 @@ Codex 版本兼容、飞书具体权限/事件、网络与钥匙串授权的检�
 - 没有执行中、等待投递或状态未确认的任务。
 - 已在旧客户端停止桥接。
 - 已关闭旧客户端窗口。
-- 已备份本机数据目录；运行中的数据库不能作为最终备份。
-
-推荐步骤：
-
-```bash
-backup="$HOME/Desktop/im-agent-backup-$(date +%Y%m%d-%H%M%S)"
-mkdir -p "$backup"
-ditto "$HOME/Library/Application Support/IM Agent" "$backup/IM Agent"
-```
 
 构建新版并安装：
 
@@ -200,7 +191,7 @@ bash scripts/install-macos.sh build/bin/im-agent.app /Applications
 
 1. 停止新版桥接。
 2. 退出新版客户端。
-3. 找到最近一次 `/Applications/.im-agent-backup.*` 中的旧 App。
+3. 从已校验的旧版本发布产物中取得对应的 App。
 4. 恢复旧客户端和后台启动入口。
 5. 打开旧客户端，必要时再次执行“更新后台程序”，让旧稳定后台回滚。
 6. 如数据库结构已升级，不要直接用旧数据库覆盖新数据；先停止进程、备份新目录，并核对兼容性。
