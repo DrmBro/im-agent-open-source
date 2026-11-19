@@ -140,6 +140,8 @@ func (b *Bridge) Start(parent context.Context) error {
 	wg.Add(1)
 	go func() { defer wg.Done(); b.syncInboxTopics(ctx) }()
 	wg.Add(1)
+	go func() { defer wg.Done(); b.syncInboxSidebar(ctx) }()
+	wg.Add(1)
 	go func() { defer wg.Done(); b.syncInboundHistory(ctx) }()
 
 	if b.cfg.Watch.Enabled {

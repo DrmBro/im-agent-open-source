@@ -3,7 +3,7 @@ package store
 import "context"
 
 func (s *Store) migrateInboxTopics() error {
-	_, err := s.db.Exec(`CREATE TABLE IF NOT EXISTS inbox_topics(event_id TEXT PRIMARY KEY REFERENCES personal_inbox(id) ON DELETE CASCADE, topic_id TEXT NOT NULL,title TEXT NOT NULL)`)
+	_, err := s.db.Exec(`CREATE TABLE IF NOT EXISTS inbox_topics(event_id TEXT PRIMARY KEY REFERENCES personal_inbox(id) ON DELETE CASCADE, topic_id TEXT NOT NULL,title TEXT NOT NULL); CREATE TABLE IF NOT EXISTS inbox_sidebar_queue(thread_id TEXT PRIMARY KEY REFERENCES sessions(thread_id) ON DELETE CASCADE,event_id TEXT NOT NULL,retry_at INTEGER NOT NULL DEFAULT 0)`)
 	return err
 }
 

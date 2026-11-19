@@ -33,17 +33,18 @@ type Turn struct {
 	} `json:"error"`
 }
 type Thread struct {
-	Preview     string `json:"preview"`
-	ProjectID   string `json:"projectId"`
-	Model       string `json:"model"`
-	Effort      string `json:"reasoningEffort"`
-	HistoryMode string `json:"historyMode"`
-	Name        string `json:"name"`
-	ID          string `json:"id"`
-	Cwd         string `json:"cwd"`
-	CreatedAt   int64  `json:"createdAt"`
-	UpdatedAt   int64  `json:"updatedAt"`
-	Turns       []Turn `json:"turns"`
+	Section     *struct{ ID string } `json:"section"`
+	Preview     string               `json:"preview"`
+	ProjectID   string               `json:"projectId"`
+	Model       string               `json:"model"`
+	Effort      string               `json:"reasoningEffort"`
+	HistoryMode string               `json:"historyMode"`
+	Name        string               `json:"name"`
+	ID          string               `json:"id"`
+	Cwd         string               `json:"cwd"`
+	CreatedAt   int64                `json:"createdAt"`
+	UpdatedAt   int64                `json:"updatedAt"`
+	Turns       []Turn               `json:"turns"`
 	Status      struct {
 		Type string `json:"type"`
 	} `json:"status"`
