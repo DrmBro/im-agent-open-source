@@ -18,7 +18,21 @@
   start.onclick=()=>task(async()=>{await api().ReviewPersonalInbox({id:x.id,action:'start'});note('已为这条消息创建会话。');await refresh(true);});
   ignore.onclick=()=>task(async()=>{if(!await confirmAction('忽略这条消息？',`来自 ${x.user_name||x.user}：\n${(x.text||'').slice(0,200)}\n\n忽略后不会创建会话，也不会回复对方。`,{confirmText:'忽略'}))return;await api().ReviewPersonalInbox({id:x.id,action:'ignore'});await refresh(true);});
   actions.append(start,ignore);
-  row.append(head,node('p','inbox-text',x.text||'（无文字）'),actions);
+  row.append(head,node('p','inbox-text',x.text||'（无文字）'));
+  const a=x.analysis;
+  if(!a)row.append(node('p','muted','等待模型分析'));
+  else if(a.failed)row.append(node('p','notice warning',a.reason));
+  else {
+   row.append(node('strong','',a.attention?'需要关注':'无需特别关注'),node('span','chip',a.new_session?'建议新建会话':'无需新建会话'),node('p','',a.reason));
+   if(a.completed_request)row.append(node('p','inbox-text','补全后的请求：'+a.completed_request));
+   if(a.evidence?.length){
+    const details=node('details');details.append(node('summary','','查看补全依据'));
+    for(const excerpt of a.evidence)details.append(node('p','inbox-text',excerpt));
+    row.append(details);
+   }
+   if(a.note)row.append(node('p','muted',a.note));
+  }
+  row.append(actions);
   return row;
  }
  async function refresh(force=false){

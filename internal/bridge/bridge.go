@@ -136,6 +136,8 @@ func (b *Bridge) Start(parent context.Context) error {
 	wg.Add(1)
 	go func() { defer wg.Done(); b.syncInboundQueue(ctx) }()
 	wg.Add(1)
+	go func() { defer wg.Done(); b.syncInboxAnalysis(ctx) }()
+	wg.Add(1)
 	go func() { defer wg.Done(); b.syncInboundHistory(ctx) }()
 
 	if b.cfg.Watch.Enabled {
@@ -295,14 +297,19 @@ func (b *Bridge) processClaimedInbound(ctx context.Context, adapter im.Adapter, 
 	return nil // 入站内容已持久化；队列满只推迟调度，不要求平台再次投递。
 }
 func (b *Bridge) PersonalInbox(ctx context.Context) ([]store.PersonalInboxItem, error) {
-	today := time.Now().In(time.FixedZone("Asia/Shanghai", 8*3600))
-	start := time.Date(today.Year(), today.Month(), today.Day(), 0, 0, 0, 0, today.Location()).Unix()
-	return b.store.PersonalInbox(ctx, start)
+	return b.store.PersonalInbox(ctx, inboxDayStart())
 }
 func (b *Bridge) CreatePersonalInboxSession(ctx context.Context, id string) error {
 	m, e := b.store.InboxMessage(id)
 	if e != nil {
 		return e
+	}
+	supplement, e := b.store.InboxSupplement(id)
+	if e != nil {
+		return e
+	}
+	if supplement != "" {
+		m.Text += "\n\n【收件分析根据同群消息补全，供核对】\n" + supplement
 	}
 	a := b.channels[m.Address.Connection]
 	if a == nil {

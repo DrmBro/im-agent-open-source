@@ -10,18 +10,19 @@ import (
 )
 
 type PersonalInboxItem struct {
-	ID         string `json:"id"`
-	Connection string `json:"connection"`
-	Channel    string `json:"channel"`
-	Chat       string `json:"chat"`
-	User       string `json:"user"`
-	UserName   string `json:"user_name"`
-	Text       string `json:"text"`
-	Received   int64  `json:"received"`
-	IsDirect   bool   `json:"is_direct"`
-	Mention    bool   `json:"mention"`
-	Quoted     bool   `json:"quoted"`
-	State      string `json:"state"`
+	Analysis   *InboxAnalysis `json:"analysis,omitempty"`
+	ID         string         `json:"id"`
+	Connection string         `json:"connection"`
+	Channel    string         `json:"channel"`
+	Chat       string         `json:"chat"`
+	User       string         `json:"user"`
+	UserName   string         `json:"user_name"`
+	Text       string         `json:"text"`
+	Received   int64          `json:"received"`
+	IsDirect   bool           `json:"is_direct"`
+	Mention    bool           `json:"mention"`
+	Quoted     bool           `json:"quoted"`
+	State      string         `json:"state"`
 }
 type PersonalInboxAction struct {
 	ID     string `json:"id"`
@@ -39,16 +40,19 @@ WHERE state='processing'
 AND EXISTS (SELECT 1 FROM inbound_messages i JOIN events e ON e.id=i.event_id
  WHERE i.event_id=personal_inbox.id AND i.thread_id='' AND e.status='done' AND e.stage='received')
 AND NOT EXISTS (SELECT 1 FROM request_results r WHERE r.event_id=personal_inbox.id)`)
-	return e
+	if e != nil {
+		return e
+	}
+	return s.migrateInboxAnalysis()
 }
 func (s *Store) PutPersonalInbox(m im.Message) error {
 	raw, _ := json.Marshal(m)
-	mention := m.Followup || m.QuotedID != ""
+	mention := !m.IsDirect && !m.Followup
 	_, e := s.db.Exec(`INSERT INTO personal_inbox(id,connection_id,channel,chat,user_id,user_name,text,payload,received_at,is_direct,mention,quoted,state,updated_at) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?) ON CONFLICT(id) DO NOTHING`, m.ID, m.Address.Connection, m.Address.Channel, m.Address.ChatID, m.UserID, m.UserName, m.Text, string(raw), time.Now().Unix(), m.IsDirect, boolInt(mention), boolInt(m.QuotedID != ""), "new", time.Now().Unix())
 	return e
 }
 func (s *Store) PersonalInbox(ctx context.Context, today int64) ([]PersonalInboxItem, error) {
-	rows, e := s.db.QueryContext(ctx, `SELECT id,connection_id,channel,chat,user_id,user_name,text,received_at,is_direct,mention,quoted,state FROM personal_inbox WHERE received_at>=? ORDER BY received_at DESC,id`, today)
+	rows, e := s.db.QueryContext(ctx, `SELECT id,connection_id,channel,chat,user_id,user_name,text,received_at,is_direct,mention,quoted,state,coalesce(a.result,'') FROM personal_inbox p LEFT JOIN inbox_analysis a ON a.event_id=p.id WHERE received_at>=? ORDER BY received_at DESC,id`, today)
 	if e != nil {
 		return nil, e
 	}
@@ -57,8 +61,14 @@ func (s *Store) PersonalInbox(ctx context.Context, today int64) ([]PersonalInbox
 	for rows.Next() {
 		var x PersonalInboxItem
 		var d, m, q int
-		if e = rows.Scan(&x.ID, &x.Connection, &x.Channel, &x.Chat, &x.User, &x.UserName, &x.Text, &x.Received, &d, &m, &q, &x.State); e != nil {
+		var analysis string
+		if e = rows.Scan(&x.ID, &x.Connection, &x.Channel, &x.Chat, &x.User, &x.UserName, &x.Text, &x.Received, &d, &m, &q, &x.State, &analysis); e != nil {
 			return nil, e
+		}
+		if analysis != "" {
+			if err := json.Unmarshal([]byte(analysis), &x.Analysis); err != nil {
+				return nil, err
+			}
 		}
 		x.IsDirect = d != 0
 		x.Mention = m != 0

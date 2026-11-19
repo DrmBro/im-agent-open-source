@@ -169,6 +169,7 @@ function renderConnections(){
 function addConnection(){if(busy||!draft||descriptors.length===0)return;let n=1;while(draft.connections.some(c=>c.id==='im-'+n))n++;const c={id:'im-'+n,type:descriptors[0].type,allowed_users:[],admin_users:[],chat_name_prefix:'Codex',auto_create_chat:!['dingtalk','dingtalk_personal'].includes(descriptors[0].type),conversation_mode:'group',shared_chat_id:''};draft.connections.push(c);modified();renderConnections();renderWatch();navigate('connections');}
 function renderCodex(){
  const el=$('codex-fields');el.replaceChildren();
+ bindValue(el,'收件分析模型（可选）',draft.codex.inbox_model||'',v=>draft.codex.inbox_model=v.trim(),{help:'留空沿用当前 Codex 模型，用于个人收件的关注建议和群消息补全。'});
  const following=(draft.codex.mode||'follow_local')==='follow_local';
  const block=node('div','source-summary');const heading=node('div','connection-header');heading.append(node('h3','','跟随本机 Codex 配置'),node('span','badge',following?'默认模式':'高级兼容模式'));block.append(heading);
  block.append(node('p','','CC Switch 的 Codex 页签负责管理中转与模型，本客户端不再要求填写模型账号或密钥，也不会读取 CC Switch 数据库。'));
