@@ -41,8 +41,10 @@ func parseDirectoryTime(raw json.RawMessage) int64 {
 func (c *Client) startDirectoryJobs(ctx context.Context) func() {
 	background, cancel := context.WithCancel(ctx)
 	jobs := queue.New(background, 4, 256)
+	names := queue.New(background, 2, 32)
 	c.mu.Lock()
 	c.directoryJobs = jobs
+	c.nameJobs = names
 	c.mu.Unlock()
 	directoryDone, activityDone := make(chan struct{}), make(chan struct{})
 	go func() {
@@ -77,10 +79,12 @@ func (c *Client) startDirectoryJobs(ctx context.Context) func() {
 		cancel()
 		c.mu.Lock()
 		c.directoryJobs = nil
+		c.nameJobs = nil
 		c.mu.Unlock()
 		<-directoryDone
 		<-activityDone
 		jobs.Wait()
+		names.Wait()
 	}
 }
 

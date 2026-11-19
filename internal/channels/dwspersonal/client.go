@@ -23,6 +23,8 @@ type Client struct {
 	directoryIndexAt      time.Time
 	directoryJobs         *queue.Queue
 	directoryCache        sync.Map
+	groupNames            sync.Map
+	nameJobs              *queue.Queue
 	cfg                   config.Connection
 	binary, profile, self string
 	mu                    sync.Mutex

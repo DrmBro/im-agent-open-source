@@ -51,7 +51,7 @@ func (c *Client) fetchCategoryGroups(ctx context.Context, category string) ([]im
 		if err != nil {
 			return nil, err
 		}
-		c.directoryCache.Store(category, groupDirectoryCache{time.Now(), groups})
+		c.cacheDirectory(category, groups)
 		return c.sortDirectory(ctx, append([]im.DirectoryGroup{}, groups...)), nil
 	}
 	args := []string{"chat", "+category-list-conversations", "--category-id", category}
@@ -119,7 +119,7 @@ func (c *Client) fetchCategoryGroups(ctx context.Context, category string) ([]im
 			}
 		}
 	}
-	c.directoryCache.Store(category, groupDirectoryCache{time.Now(), out})
+	c.cacheDirectory(category, out)
 	return c.sortDirectory(ctx, append([]im.DirectoryGroup{}, out...)), nil
 }
 
@@ -154,18 +154,89 @@ func (c *Client) refreshGroupDirectory(ctx context.Context) {
 	}
 }
 
-// 显示名称只读当前账号已有的目录快照，不在刷新收件箱时访问钉钉。
-func (c *Client) InboxGroupName(chat string) string {
-	id, ok := strings.CutPrefix(chat, c.accountPrefix()+"group:")
-	if !ok {
-		return ""
-	}
-	if cache, ok := c.directoryCache.Load("all"); ok {
-		for _, g := range cache.(groupDirectoryCache).Groups {
-			if g.ID == id {
-				return g.Name
-			}
+type cachedGroupName struct {
+	name      string
+	refreshAt time.Time
+}
+
+func (c *Client) cacheDirectory(category string, groups []im.DirectoryGroup) {
+	now := time.Now()
+	for _, g := range groups {
+		if name := strings.TrimSpace(g.Name); name != "" && name != g.ID {
+			c.groupNames.Store(g.ID, cachedGroupName{name, now.Add(10 * time.Minute)})
 		}
 	}
-	return ""
+	c.directoryCache.Store(category, groupDirectoryCache{now, groups})
+}
+
+func (c *Client) InboxGroupName(chat string) string {
+	id, ok := strings.CutPrefix(chat, c.accountPrefix()+"group:")
+	if !ok || !validID(id) {
+		return ""
+	}
+	var cached cachedGroupName
+	if v, ok := c.groupNames.Load(id); ok {
+		cached = v.(cachedGroupName)
+		if time.Now().Before(cached.refreshAt) {
+			return cached.name
+		}
+	}
+	c.mu.Lock()
+	jobs := c.nameJobs
+	c.mu.Unlock()
+	if jobs == nil {
+		return cached.name
+	}
+	key := "name:" + id
+	if _, busy := c.directoryScheduled.LoadOrStore(key, true); busy {
+		return cached.name
+	}
+	err := jobs.Push(key, func(ctx context.Context) {
+		defer c.directoryScheduled.Delete(key)
+		name := c.lookupGroupName(ctx, id)
+		if name != "" {
+			c.groupNames.Store(id, cachedGroupName{name, time.Now().Add(10 * time.Minute)})
+		} else if ctx.Err() == nil {
+			// 查询失败保留已有名称，短暂退避。期间目录刷新得到的新名称优先。
+			next := cachedGroupName{cached.name, time.Now().Add(time.Minute)}
+			if cached.refreshAt.IsZero() {
+				c.groupNames.LoadOrStore(id, next)
+			} else {
+				c.groupNames.CompareAndSwap(id, cached, next)
+			}
+		}
+	})
+	if err != nil {
+		c.directoryScheduled.Delete(key)
+	}
+	return cached.name
+}
+
+func (c *Client) lookupGroupName(ctx context.Context, id string) string {
+	raw, err := c.run(ctx, "", "chat", "+conversation-info", "--group", id)
+	if err != nil {
+		return ""
+	}
+	raw, err = successPayload(raw)
+	if err != nil {
+		return ""
+	}
+	var response struct {
+		Success bool `json:"success"`
+		Result  struct {
+			Conversation struct {
+				ID     string `json:"openConversationId"`
+				Title  string `json:"title"`
+				Single bool   `json:"singleChat"`
+			} `json:"conversationInfo"`
+		} `json:"result"`
+	}
+	if json.Unmarshal(raw, &response) != nil || !response.Success {
+		return ""
+	}
+	group := response.Result.Conversation
+	if group.ID != id || group.Single || group.Title == id {
+		return ""
+	}
+	return strings.TrimSpace(group.Title)
 }

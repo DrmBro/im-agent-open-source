@@ -52,7 +52,7 @@
   return row;
  }
  function conversation(key,rows,shown){
-  const latest=rows[0],row=node('details','inbox-conversation');
+  const latest=shown[0],row=node('details','inbox-conversation');
   const title=latest.is_direct?(latest.user_name||latest.user):(latest.chat_name||'群聊 · '+latest.chat.slice(-12));
   const head=node('summary','inbox-summary');
   const count=rows.filter(attention).length;
@@ -93,10 +93,13 @@
    groups.get(key).push(x);
   }
   const box=list(),fragment=document.createDocumentFragment();
+  const conversations=[];
   for(const [key,rows] of groups){
    const shown=rows.filter(visible);
-   if(shown.length)fragment.append(conversation(key,rows,shown));
+   if(shown.length)conversations.push({key,rows,shown});
   }
+  conversations.sort((a,b)=>b.shown[0].received-a.shown[0].received||a.key.localeCompare(b.key));
+  for(const {key,rows,shown} of conversations)fragment.append(conversation(key,rows,shown));
   const count=fragment.childElementCount;
   document.getElementById('inbox-analysis-count').textContent=count+' 个对话 · 今日需关注 '+items.filter(attention).length+' 条';
   if(!count)fragment.append(node('p','list-empty',items.length?'没有符合筛选条件的消息':'今天暂无待处理个人消息'));
