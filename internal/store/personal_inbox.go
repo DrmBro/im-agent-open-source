@@ -10,6 +10,7 @@ import (
 )
 
 type PersonalInboxItem struct {
+	ChatName   string         `json:"chat_name,omitempty"`
 	Analysis   *InboxAnalysis `json:"analysis,omitempty"`
 	ID         string         `json:"id"`
 	Connection string         `json:"connection"`

@@ -2,9 +2,7 @@ package store
 
 import (
 	"context"
-	"database/sql"
 	"encoding/json"
-	"errors"
 	"time"
 )
 
@@ -43,20 +41,4 @@ func (s *Store) SaveInboxAnalysis(ctx context.Context, id string, a InboxAnalysi
  SELECT id,?,1,? FROM personal_inbox WHERE id=? AND state='new'
  ON CONFLICT(event_id) DO UPDATE SET result=excluded.result, attempts=inbox_analysis.attempts+1, retry_at=excluded.retry_at`, string(result), retry, id)
 	return err
-}
-
-func (s *Store) InboxSupplement(id string) (string, error) {
-	var raw string
-	err := s.db.QueryRow("SELECT result FROM inbox_analysis WHERE event_id=?", id).Scan(&raw)
-	if errors.Is(err, sql.ErrNoRows) {
-		return "", nil
-	}
-	if err != nil {
-		return "", err
-	}
-	var a InboxAnalysis
-	if err = json.Unmarshal([]byte(raw), &a); err != nil {
-		return "", err
-	}
-	return a.CompletedRequest, nil
 }

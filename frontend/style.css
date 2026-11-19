@@ -401,3 +401,14 @@ dialog.danger #confirm-yes{background:var(--danger);border-color:var(--danger)}
 #message-forward>summary::-webkit-details-marker,.event-diagnostics>summary::-webkit-details-marker,.advanced-settings>summary::-webkit-details-marker,.closure-row details>summary::-webkit-details-marker,.board-detail details>summary::-webkit-details-marker{display:none}
 #message-forward>summary::before,.event-diagnostics>summary::before,.advanced-settings>summary::before,.closure-row details>summary::before,.board-detail details>summary::before{content:'';flex:none;width:6px;height:6px;border-right:1.8px solid currentColor;border-bottom:1.8px solid currentColor;transform:rotate(-45deg);transition:transform .2s;margin:0 3px}
 #message-forward[open]>summary::before,.event-diagnostics[open]>summary::before,.advanced-settings[open]>summary::before,.closure-row details[open]>summary::before,.board-detail details[open]>summary::before{transform:rotate(45deg)}
+
+.inbox-filter,.inbox-choice{display:inline-flex;align-items:center;gap:8px}
+.inbox-choice input{width:auto}
+.inbox-conversation{border-top:1px solid var(--border)}
+.inbox-summary{display:flex;align-items:center;gap:10px;padding:14px 2px;cursor:pointer}
+.inbox-summary::before{content:'▸';color:var(--text-4)}
+.inbox-conversation[open]>.inbox-summary::before{content:'▾'}
+.inbox-summary::-webkit-details-marker{display:none}
+.inbox-summary time{margin-left:auto}
+.inbox-conversation-body{padding:0 12px 14px}
+.inbox-message{margin-top:10px;padding:12px;border-left:2px solid var(--brand-line);background:var(--surface-3);border-radius:4px}

@@ -297,37 +297,28 @@ func (b *Bridge) processClaimedInbound(ctx context.Context, adapter im.Adapter, 
 	return nil // 入站内容已持久化；队列满只推迟调度，不要求平台再次投递。
 }
 func (b *Bridge) PersonalInbox(ctx context.Context) ([]store.PersonalInboxItem, error) {
-	return b.store.PersonalInbox(ctx, inboxDayStart())
+	items, err := b.store.PersonalInbox(ctx, inboxDayStart())
+	if err != nil {
+		return nil, err
+	}
+	for i := range items {
+		row := &items[i]
+		if !row.IsDirect {
+			if dir, ok := b.channels[row.Connection].(interface{ InboxGroupName(string) string }); ok {
+				row.ChatName = dir.InboxGroupName(row.Chat)
+			}
+		}
+	}
+	return items, nil
 }
-func (b *Bridge) CreatePersonalInboxSession(ctx context.Context, id string) error {
-	m, e := b.store.InboxMessage(id)
-	if e != nil {
-		return e
-	}
-	supplement, e := b.store.InboxSupplement(id)
-	if e != nil {
-		return e
-	}
-	if supplement != "" {
-		m.Text += "\n\n【收件分析根据同群消息补全，供核对】\n" + supplement
-	}
-	a := b.channels[m.Address.Connection]
-	if a == nil {
-		return errors.New("消息连接不存在")
-	}
-	// 串行核对同一收件的创建操作，重复点击不会创建多个线程。
+func (b *Bridge) CreatePersonalInboxSession(ctx context.Context, ids ...string) error {
 	b.bindMu.Lock()
 	defer b.bindMu.Unlock()
-	state, e := b.store.PersonalInboxState(id)
+	m, orderedIDs, e := b.inboxSessionInput(ctx, ids)
 	if e != nil {
 		return e
 	}
-	if state != "new" {
-		return errors.New("消息已处理，请刷新个人消息列表")
-	}
-	if !a.Capabilities().PersonalInbox || !b.messageAllowed(a, m) {
-		return errors.New("消息连接或接收权限已失效")
-	}
+	id := m.ID
 	address, e := im.QuestionAddress(m.Address, store.Hash(id))
 	if e != nil {
 		return e
@@ -347,7 +338,7 @@ func (b *Bridge) CreatePersonalInboxSession(ctx context.Context, id string) erro
 	} else if s.Status != "active" {
 		return errors.New("这条消息的独立会话已关闭，请核对处理记录")
 	}
-	if e = b.store.QueuePersonalInbox(s, m); e != nil {
+	if e = b.store.QueuePersonalInbox(s, m, orderedIDs...); e != nil {
 		return e
 	}
 	// 已持久排队；容量不足时由既有恢复调度器继续，不让用户重复提交。

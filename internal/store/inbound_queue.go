@@ -56,21 +56,21 @@ func (s *Store) ClaimInbound(msg im.Message) (bool, error) {
 
 // 队列状态和最终输入同一事务保存；这一阶段没有调用过 Codex 提交接口。
 func (s *Store) QueueInbound(session Session, msg im.Message) error {
-	return s.queueInbound(session, msg, msg.Address, false)
+	return s.queueInbound(session, msg, msg.Address, nil)
 }
 func (s *Store) QueueRoutedInbound(session Session, msg im.Message) error {
-	return s.queueRoutedInbound(session, msg, false)
+	return s.queueRoutedInbound(session, msg, nil)
 }
-func (s *Store) queueRoutedInbound(session Session, msg im.Message, personal bool) error {
+func (s *Store) queueRoutedInbound(session Session, msg im.Message, inboxIDs []string) error {
 	source := msg.Address
 	wire, err := session.Address.DeliveryAddress()
 	if err != nil || wire.Key() != source.Key() {
 		return errors.New("问题路由不能改变消息发送目标")
 	}
 	msg.Address = session.Address
-	return s.queueInbound(session, msg, source, personal)
+	return s.queueInbound(session, msg, source, inboxIDs)
 }
-func (s *Store) queueInbound(session Session, msg im.Message, source im.Address, personal bool) error {
+func (s *Store) queueInbound(session Session, msg im.Message, source im.Address, inboxIDs []string) error {
 	payload, err := json.Marshal(msg)
 	if err != nil {
 		return err
@@ -80,24 +80,43 @@ func (s *Store) queueInbound(session Session, msg im.Message, source im.Address,
 		return err
 	}
 	defer tx.Rollback()
-	if personal {
-		result, err := tx.Exec("UPDATE personal_inbox SET state='processing',updated_at=? WHERE id=? AND state='new'", time.Now().Unix(), msg.ID)
-		if err != nil {
-			return err
+	if len(inboxIDs) > 0 {
+		for _, id := range inboxIDs {
+			state := "bundled"
+			if id == msg.ID {
+				state = "processing"
+			}
+			result, err := tx.Exec("UPDATE personal_inbox SET state=?,updated_at=? WHERE id=? AND state='new' AND connection_id=? AND channel=? AND chat=?", state, time.Now().Unix(), id, source.Connection, source.Channel, source.ChatID)
+			if err != nil {
+				return err
+			}
+			count, err := result.RowsAffected()
+			if err != nil {
+				return err
+			}
+			if count != 1 {
+				return errors.New("所选消息已处理，请刷新后重新选择")
+			}
+			if id != msg.ID {
+				result, err = tx.Exec("UPDATE inbound_messages SET thread_id=? WHERE event_id=? AND thread_id='' AND address_key=?", session.ThreadID, id, Hash(source.Key()))
+				if err != nil {
+					return err
+				}
+				count, err = result.RowsAffected()
+				if err != nil {
+					return err
+				}
+				if count != 1 {
+					return errors.New("所选消息已关联其他会话")
+				}
+			}
 		}
-		count, err := result.RowsAffected()
-		if err != nil {
-			return err
-		}
-		if count != 1 {
-			return errors.New("消息已处理，请刷新个人消息列表")
-		}
-		result, err = tx.Exec(`UPDATE events SET status='processing' WHERE id=? AND status='done' AND stage='received'
+		result, err := tx.Exec(`UPDATE events SET status='processing' WHERE id=? AND status='done' AND stage='received'
 AND NOT EXISTS (SELECT 1 FROM request_results WHERE event_id=?)`, msg.ID, msg.ID)
 		if err != nil {
 			return err
 		}
-		count, err = result.RowsAffected()
+		count, err := result.RowsAffected()
 		if err != nil {
 			return err
 		}
@@ -340,6 +359,9 @@ WHERE event_id IN (SELECT i.event_id FROM inbound_messages i
 }
 
 // 人工选择处理与持久排队原子提交；失败时保留待处理状态。
-func (s *Store) QueuePersonalInbox(session Session, msg im.Message) error {
-	return s.queueRoutedInbound(session, msg, true)
+func (s *Store) QueuePersonalInbox(session Session, msg im.Message, ids ...string) error {
+	if len(ids) == 0 {
+		ids = []string{msg.ID}
+	}
+	return s.queueRoutedInbound(session, msg, ids)
 }

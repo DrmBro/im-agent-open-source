@@ -153,3 +153,19 @@ func (c *Client) refreshGroupDirectory(ctx context.Context) {
 		_, _ = c.fetchCategoryGroups(ctx, category.ID)
 	}
 }
+
+// 显示名称只读当前账号已有的目录快照，不在刷新收件箱时访问钉钉。
+func (c *Client) InboxGroupName(chat string) string {
+	id, ok := strings.CutPrefix(chat, c.accountPrefix()+"group:")
+	if !ok {
+		return ""
+	}
+	if cache, ok := c.directoryCache.Load("all"); ok {
+		for _, g := range cache.(groupDirectoryCache).Groups {
+			if g.ID == id {
+				return g.Name
+			}
+		}
+	}
+	return ""
+}
