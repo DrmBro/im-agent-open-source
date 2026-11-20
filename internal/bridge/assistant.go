@@ -518,12 +518,11 @@ func (b *Bridge) assistantDispatch(ctx context.Context, src im.AssistantSource, 
 		if err != nil {
 			continue
 		}
-		thread, err := b.startAssistantSession(ctx, src, full)
+		_, err = b.startAssistantSession(ctx, src, full)
 		if err != nil {
 			_ = b.store.LinkAssistantSession(x.ID, "", diagnostics.Error(err))
 			continue
 		}
-		_ = b.store.LinkAssistantSession(x.ID, thread, "")
 	}
 }
 
@@ -559,7 +558,7 @@ func (b *Bridge) startAssistantSession(ctx context.Context, src im.AssistantSour
 	msg := im.Message{Address: wire, ID: "assistant:" + x.ID, UserID: peer, UserName: x.Messages[0].SenderName, Text: assistantSessionPrompt(x), IsDirect: x.Kind == "direct", ConversationID: x.Conversation, PlatformID: x.Messages[len(x.Messages)-1].MessageID}
 	msg.InboxSources = []string{msg.ID}
 	if len([]rune(msg.Text)) > b.cfg.Limits.MaxInputChars {
-		msg.Text = string([]rune(msg.Text)[:b.cfg.Limits.MaxInputChars-200]) + "\n……（消息过长已截断，请用 read_context.py 读取原文）"
+		msg.Text = clipRunes(msg.Text, max(0, b.cfg.Limits.MaxInputChars-1))
 	}
 	b.bindMu.Lock()
 	defer b.bindMu.Unlock()
@@ -567,22 +566,45 @@ func (b *Bridge) startAssistantSession(ctx context.Context, src im.AssistantSour
 	if err != nil {
 		return "", err
 	}
+	current, err := b.store.AssistantItem(x.ID)
+	if err != nil {
+		return "", err
+	}
+	if current.ThreadID != "" {
+		return current.ThreadID, nil
+	}
 	s, err := b.store.ByChat(address)
 	if errors.Is(err, sql.ErrNoRows) {
 		if b.desktop == nil {
 			return "", errors.New("Codex 桌面连接尚未就绪")
 		}
-		cfg := b.desktopDispatchConfig(msg)
-		if err := b.checkCreationPermissionFailure(address); err != nil {
-			return "", err
-		}
-		t, err := b.desktop.StartConfiguredThread(ctx, cfg, codex.ProjectChoice{Path: cfg.WorkDir}, codex.CreationSelection{Prompt: x.Title})
+		match, err := b.matchAssistantThread(ctx, x, wire)
 		if err != nil {
-			return "", b.recordCreationPermissionFailure(address, t.ID, err)
+			return "", fmt.Errorf("核对桌面活跃会话失败：%w", err)
 		}
-		s = store.Session{ThreadID: t.ID, Address: address, WorkDir: t.Cwd, Owner: msg.UserID, GroupName: x.Title, Fresh: true, DesktopDispatch: true}
-		if err = b.saveSession(s); err != nil {
-			return "", err
+		if match != nil {
+			msg.ReusedDesktop = true
+			s, err = b.store.ByThread(match.ID)
+			if errors.Is(err, sql.ErrNoRows) {
+				s = store.Session{ThreadID: match.ID, Address: address, WorkDir: match.Cwd, Owner: msg.UserID, DesktopDispatch: true}
+				err = b.saveSession(s)
+			}
+			if err != nil {
+				return "", err
+			}
+		} else {
+			cfg := b.desktopDispatchConfig(msg)
+			if err := b.checkCreationPermissionFailure(address); err != nil {
+				return "", err
+			}
+			t, err := b.desktop.StartConfiguredThread(ctx, cfg, codex.ProjectChoice{Path: cfg.WorkDir}, codex.CreationSelection{Prompt: x.Title})
+			if err != nil {
+				return "", b.recordCreationPermissionFailure(address, t.ID, err)
+			}
+			s = store.Session{ThreadID: t.ID, Address: address, WorkDir: t.Cwd, Owner: msg.UserID, GroupName: x.Title, Fresh: true, DesktopDispatch: true}
+			if err = b.saveSession(s); err != nil {
+				return "", err
+			}
 		}
 	} else if err != nil {
 		return "", err
@@ -590,7 +612,7 @@ func (b *Bridge) startAssistantSession(ctx context.Context, src im.AssistantSour
 	if err = b.queueAssistantInput(s, msg); err != nil {
 		return "", err
 	}
-	return s.ThreadID, nil
+	return s.ThreadID, b.store.LinkAssistantSession(x.ID, s.ThreadID, "")
 }
 
 // assistantNudge 在会话空闲时提醒它有新消息待读；会话忙碌时只保留队列。

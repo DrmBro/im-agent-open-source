@@ -81,8 +81,10 @@ func (s *Store) queueInbound(session Session, msg im.Message, source im.Address,
 	}
 	defer tx.Rollback()
 	if len(inboxIDs) > 0 {
-		if _, err := tx.Exec("INSERT INTO inbox_sidebar_queue(thread_id,event_id) VALUES(?,?) ON CONFLICT(thread_id) DO NOTHING", session.ThreadID, msg.ID); err != nil {
-			return err
+		if !msg.ReusedDesktop {
+			if _, err := tx.Exec("INSERT INTO inbox_sidebar_queue(thread_id,event_id) VALUES(?,?) ON CONFLICT(thread_id) DO NOTHING", session.ThreadID, msg.ID); err != nil {
+				return err
+			}
 		}
 		for _, id := range inboxIDs {
 			state := "bundled"

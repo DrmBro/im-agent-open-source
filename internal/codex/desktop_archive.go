@@ -83,6 +83,24 @@ func (c *cdpClient) archiveRequest(ctx context.Context, method string, params an
 	}
 }
 func (c *cdpClient) archiveTargetLoaded(ctx context.Context, thread string) (bool, error) {
+	ids, err := c.loadedIDs(ctx)
+	for _, id := range ids {
+		if id == thread {
+			return true, nil
+		}
+	}
+	return false, err
+}
+func (c *Client) LoadedDesktopThreads(ctx context.Context) ([]string, error) {
+	desktop, err := discoverDesktopCDP(ctx, c.runtimeConfig.Codex.CdpPort)
+	if err != nil {
+		return nil, err
+	}
+	defer desktop.close()
+	return desktop.loadedIDs(ctx)
+}
+func (c *cdpClient) loadedIDs(ctx context.Context) ([]string, error) {
+	var ids []string
 	cursor := ""
 	seen := map[string]bool{}
 	for page := 0; page < 30; page++ {
@@ -92,30 +110,26 @@ func (c *cdpClient) archiveTargetLoaded(ctx context.Context, thread string) (boo
 		}
 		raw, _, e := c.archiveRequest(ctx, "thread/loaded/list", params)
 		if e != nil {
-			return false, e
+			return nil, e
 		}
 		var v struct {
 			Data []string `json:"data"`
 			Next *string  `json:"nextCursor"`
 		}
 		if json.Unmarshal(raw, &v) != nil || v.Data == nil {
-			return false, errors.New("桌面已加载会话列表无效，未推断目标不在桌面")
+			return nil, errors.New("桌面已加载会话列表无效，未推断目标不在桌面")
 		}
-		for _, id := range v.Data {
-			if id == thread {
-				return true, nil
-			}
-		}
+		ids = append(ids, v.Data...)
 		if v.Next == nil || *v.Next == "" {
-			return false, nil
+			return ids, nil
 		}
 		cursor = *v.Next
 		if len(cursor) > 8192 || seen[cursor] {
-			return false, errors.New("桌面会话列表游标异常")
+			return nil, errors.New("桌面会话列表游标异常")
 		}
 		seen[cursor] = true
 	}
-	return false, errors.New("桌面会话列表未完整读取，未推断归档路由")
+	return nil, errors.New("桌面会话列表未完整读取，未推断归档路由")
 }
 func (c *cdpClient) archiveTargetIdle(ctx context.Context, thread string) error {
 	raw, _, e := c.archiveRequest(ctx, "thread/read", map[string]any{"threadId": thread, "includeTurns": false})

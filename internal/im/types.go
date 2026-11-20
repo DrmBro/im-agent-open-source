@@ -26,6 +26,7 @@ func (a Address) IsTopic() bool   { return a.TopicID != "" }
 func (a Address) Parent() Address { a.TopicID = ""; a.RootMessageID = ""; return a }
 
 type Message struct {
+	ReusedDesktop        bool     `json:"reused_desktop,omitempty"`
 	InboxSources         []string `json:"inbox_sources,omitempty"` // 手动收件会话的来源记录，供后台定位上下文。
 	Followup             bool     `json:"Followup,omitempty"`
 	SelfMessage          bool     `json:"SelfMessage,omitempty"`

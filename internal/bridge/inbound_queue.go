@@ -118,6 +118,13 @@ func (b *Bridge) scheduleNormalInbound(item store.QueuedInbound) error {
 			}
 			return
 		}
+		// 复用会话还在执行时，保留持久队列，避免插入或中断当前轮次。
+		if item.Message.ReusedDesktop {
+			turn, err := b.desktop.ActiveControlTurn(jobCtx, item.ThreadID)
+			if err != nil || turn != "" {
+				return
+			}
+		}
 		// 停止/重启与用户取消后，已入队的内存快照不可再次提交。
 		current, checkErr := b.store.BeginQueuedInbound(item.EventID, session.ThreadID, item.AddressKey)
 		if checkErr != nil || !current {

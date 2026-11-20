@@ -110,12 +110,12 @@ func (b *Bridge) Assistant(ctx context.Context, r AssistantRequest) (AssistantRe
 		}
 		_, dayStart := assistantDay(nowFunc())
 		b.allowAssistantTargets(src, b.mustSettings(), dayStart)
-		thread, err := b.startAssistantSession(ctx, src, x)
+		_, err = b.startAssistantSession(ctx, src, x)
 		if err != nil {
 			_ = b.store.LinkAssistantSession(x.ID, "", err.Error())
 			return out, err
 		}
-		return out, b.store.LinkAssistantSession(x.ID, thread, "")
+		return out, nil
 	case "queue":
 		if strings.TrimSpace(r.Thread) == "" {
 			return out, errors.New("缺少会话 ID")
@@ -233,7 +233,8 @@ func (b *Bridge) assistantSearchPeople(ctx context.Context, query string) ([]im.
 // assistantSearchGroups 读取后台每 5 分钟刷新的全部群目录缓存，本地按名称过滤，
 // 今天活跃的群排在前面；目录尚未加载完时退回今日活跃会话（缓存 1 分钟）。
 func (b *Bridge) assistantSearchGroups(ctx context.Context, query string) ([]im.RecentConversation, error) {
-	query = strings.ToLower(strings.TrimSpace(query))
+	query = strings.TrimSpace(query)
+	folded := strings.ToLower(query)
 	src, err := b.assistantSourceFromSettings()
 	if err != nil {
 		return nil, err
@@ -254,9 +255,13 @@ func (b *Bridge) assistantSearchGroups(ctx context.Context, query string) ([]im.
 			}
 		}
 	}
-	if len(all) == 0 {
+	{
+		seen := map[string]bool{}
+		for _, g := range all {
+			seen[g.ID] = true
+		}
 		for _, c := range recent {
-			if c.Kind == "group" {
+			if c.Kind == "group" && !seen[c.ID] {
 				all = append(all, c)
 			}
 		}
@@ -266,7 +271,7 @@ func (b *Bridge) assistantSearchGroups(ctx context.Context, query string) ([]im.
 		if query == "" && active[g.ID] == 0 {
 			continue // 不输入关键词时只列今天活跃的群
 		}
-		if query == "" || strings.Contains(strings.ToLower(g.Name), query) {
+		if query == "" || strings.Contains(strings.ToLower(g.Name), folded) {
 			out = append(out, g)
 		}
 	}
@@ -279,6 +284,7 @@ func (b *Bridge) assistantSearchGroups(ctx context.Context, query string) ([]im.
 		}
 		for _, g := range remote {
 			if !have[g.ID] {
+				have[g.ID] = true
 				g.LatestMs = active[g.ID]
 				out = append(out, g)
 			}
@@ -289,7 +295,13 @@ func (b *Bridge) assistantSearchGroups(ctx context.Context, query string) ([]im.
 	} else if len(all) == 0 && dirErr != nil {
 		return nil, errors.New("群列表正在后台加载，可直接输入群名关键词搜索")
 	}
-	sort.SliceStable(out, func(i, j int) bool { return out[i].LatestMs > out[j].LatestMs })
+	sort.SliceStable(out, func(i, j int) bool {
+		ie, je := strings.EqualFold(out[i].Name, query), strings.EqualFold(out[j].Name, query)
+		if ie != je {
+			return ie
+		}
+		return out[i].LatestMs > out[j].LatestMs
+	})
 	if len(out) > 50 {
 		out = out[:50]
 	}
@@ -362,6 +374,9 @@ func (b *Bridge) assistantRemoteGroups(ctx context.Context, src im.AssistantSour
 	groups, err := src.SearchGroups(ctx, query)
 	if err != nil {
 		return nil, err
+	}
+	if len(groups) == 0 {
+		return groups, nil
 	}
 	state.mu.Lock()
 	if len(state.groupSearch) > 200 {

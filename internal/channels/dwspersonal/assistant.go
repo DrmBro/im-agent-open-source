@@ -214,7 +214,7 @@ func (c *Client) SearchGroups(ctx context.Context, query string) ([]im.RecentCon
 	if query == "" || len([]rune(query)) > 40 || strings.HasPrefix(query, "-") {
 		return nil, errors.New("请输入群名关键词")
 	}
-	raw, err := c.run(ctx, "", "chat", "search", "--query", query, "--limit", "20")
+	raw, err := c.run(ctx, "", "chat", "+chat-search", "--query", query)
 	if err != nil {
 		return nil, err
 	}
@@ -222,21 +222,24 @@ func (c *Client) SearchGroups(ctx context.Context, query string) ([]im.RecentCon
 	if err != nil {
 		return nil, err
 	}
-	var r struct {
-		Result struct {
-			Groups []struct {
-				ID    string `json:"openConversationId"`
-				Title string `json:"title"`
-			} `json:"groups"`
-		} `json:"result"`
+	var result struct {
+		Chats []struct {
+			ID    string `json:"openConversationId"`
+			Title string `json:"title"`
+			Name  string `json:"name"`
+		} `json:"chats"`
 	}
-	if json.Unmarshal(raw, &r) != nil {
+	if err = json.Unmarshal(raw, &result); err != nil || result.Chats == nil {
 		return nil, errors.New("群搜索结果格式无效")
 	}
 	out := []im.RecentConversation{}
-	for _, g := range r.Result.Groups {
+	for _, g := range result.Chats {
 		if validID(g.ID) && strings.HasPrefix(g.ID, "cid") {
-			out = append(out, im.RecentConversation{ID: g.ID, Name: g.Title, Kind: "group"})
+			name := g.Title
+			if name == "" {
+				name = g.Name
+			}
+			out = append(out, im.RecentConversation{ID: g.ID, Name: name, Kind: "group"})
 		}
 	}
 	return out, nil
