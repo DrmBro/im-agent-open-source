@@ -153,3 +153,21 @@ func TestAssistantSettingsValidation(t *testing.T) {
 		t.Fatalf("saved=%+v", got)
 	}
 }
+
+func TestAssistantSendersFromLocalMessages(t *testing.T) {
+	db, err := New(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	_, _ = db.PutAssistantMessages("group", "", "群", []im.PulledMessage{
+		{ConversationID: "c", MessageID: "1", SenderID: "u1", SenderName: "张三", Text: "a", CreatedMs: 1},
+		{ConversationID: "c", MessageID: "2", SenderID: "u1", SenderName: "张三", Text: "b", CreatedMs: 2},
+		{ConversationID: "c", MessageID: "3", SenderID: "me", SenderName: "张三丰", Text: "c", CreatedMs: 3, Self: true},
+		{ConversationID: "c", MessageID: "4", SenderID: "bot", SenderName: "张三机器人", Text: "d", CreatedMs: 4, Robot: true},
+	})
+	got, err := db.AssistantSenders("张三", 10)
+	if err != nil || len(got) != 1 || got[0].ID != "u1" {
+		t.Fatalf("got=%+v err=%v", got, err)
+	}
+}

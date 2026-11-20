@@ -157,7 +157,7 @@
   check(grid,'可自动回复的事项直接发送',!!s.auto_send,v=>s.auto_send=v,'默认关闭：助理只拟稿，由你点“确认发送”。开启后将不经确认以你的身份发送，请谨慎。');
   box.append(grid);
   box.append(targetList('关注的人（单聊）',s.people,{placeholder:'输入姓名搜索通讯录',search:async q=>(await call({action:'search_people',query:q})).people||[]}));
-  box.append(targetList('关注的群',s.groups,{placeholder:'输入群名过滤今天活跃的群',search:async q=>((await call({action:'recent_groups'})).groups||[]).filter(g=>!q||g.name.includes(q)),recent:async()=>(await call({action:'recent_groups'})).groups||[]}));
+  box.append(targetList('关注的群',s.groups,{placeholder:'输入群名搜索我加入的全部群',search:async q=>(await call({action:'search_groups',query:q})).groups||[],recent:async()=>(await call({action:'search_groups'})).groups||[]}));
   const rules=node('div','form-panel');
   for(const [key,label,help] of [['profile','我的背景（可选）','例如职责、负责的系统、常见同事，帮助判断哪些需要你处理。'],['rule_need_me','“需要我处理”补充规则',''],['rule_auto_reply','“可自动回复”补充规则',''],['rule_no_reply','“无需回复”补充规则','']]){
    const f=node('div','field'),t=node('textarea');f.append(node('span','',label),t);t.rows=2;t.maxLength=2000;t.value=s[key]||'';t.oninput=()=>s[key]=t.value;if(help)f.append(node('small','',help));rules.append(f);

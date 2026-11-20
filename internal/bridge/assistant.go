@@ -37,10 +37,16 @@ type assistantState struct {
 	lastRun int64
 	status  string
 	nudged  map[string]int64
+	// 设置页搜索用的短期缓存
+	people   map[string]cachedPeople
+	recent   []im.RecentConversation
+	recentAt time.Time
 }
 
 func (b *Bridge) assistant() *assistantState {
-	b.assistantOnce.Do(func() { b.assistantRun = &assistantState{wake: make(chan struct{}, 1), nudged: map[string]int64{}} })
+	b.assistantOnce.Do(func() {
+		b.assistantRun = &assistantState{wake: make(chan struct{}, 1), nudged: map[string]int64{}, people: map[string]cachedPeople{}}
+	})
 	return b.assistantRun
 }
 

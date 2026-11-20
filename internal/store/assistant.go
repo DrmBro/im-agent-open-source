@@ -814,3 +814,23 @@ func (s *Store) AwaitingConversations(sinceMs int64) ([]AssistantItem, error) {
 	}
 	return out, rows.Err()
 }
+
+// AssistantSenders 在本机已拉取的消息中按姓名查找发送人，不访问钉钉。
+func (s *Store) AssistantSenders(query string, limit int) ([]im.Person, error) {
+	rows, err := s.db.Query(`SELECT sender_id, sender_name FROM assistant_messages WHERE self=0 AND robot=0 AND sender_id<>'' AND instr(lower(sender_name), lower(?))>0
+GROUP BY sender_id ORDER BY max(created_ms) DESC LIMIT ?`, query, limit)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	out := []im.Person{}
+	for rows.Next() {
+		var p im.Person
+		if err = rows.Scan(&p.ID, &p.Name); err != nil {
+			return nil, err
+		}
+		p.Title = "最近联系过"
+		out = append(out, p)
+	}
+	return out, rows.Err()
+}
