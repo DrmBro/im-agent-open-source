@@ -217,59 +217,6 @@ func (a *App) InspectCodex(c config.Codex, workDir string) (codex.LocalInfo, err
 	return codex.InspectLocal(c, workDir), nil
 }
 
-type ClosureView struct {
-	Items   []store.Closure `json:"items"`
-	Warning string          `json:"warning"`
-}
-
-func (a *App) GetClosures() (ClosureView, error) {
-	a.mu.Lock()
-	defer a.mu.Unlock()
-	if e := a.ready(); e != nil {
-		return ClosureView{}, e
-	}
-	rows, e := a.store.ClosureStatus()
-	if e != nil {
-		return ClosureView{}, errors.New("读取双向同步记录失败，请稍后刷新")
-	}
-	return ClosureView{Items: rows, Warning: a.controller.LifecycleWarning()}, nil
-}
-func (a *App) RetryClosure(thread string) error {
-	a.mu.Lock()
-	defer a.mu.Unlock()
-	if e := a.ready(); e != nil {
-		return e
-	}
-	if len(thread) < 1 || len(thread) > 128 {
-		return errors.New("会话 ID 无效")
-	}
-	return a.controller.RetryClosure(thread)
-}
-
-func (a *App) GetPresentations() ([]store.Presentation, error) {
-	a.mu.Lock()
-	defer a.mu.Unlock()
-	if e := a.ready(); e != nil {
-		return nil, e
-	}
-	rows, e := a.store.PresentationStatus()
-	if e != nil {
-		return nil, errors.New("读取群名和历史补齐状态失败")
-	}
-	return rows, nil
-}
-func (a *App) RetryPresentation(thread string) error {
-	a.mu.Lock()
-	defer a.mu.Unlock()
-	if e := a.ready(); e != nil {
-		return e
-	}
-	if thread == "" || len(thread) > 128 {
-		return errors.New("会话 ID 无效")
-	}
-	return a.controller.RetryPresentation(thread)
-}
-
 func (a *App) GetEventDiagnostics() ([]store.EventDiagnostic, error) {
 	a.mu.Lock()
 	defer a.mu.Unlock()
@@ -281,13 +228,4 @@ func (a *App) GetEventDiagnostics() ([]store.EventDiagnostic, error) {
 		return nil, errors.New("读取消息处理记录失败")
 	}
 	return rows, nil
-}
-
-func (a *App) ChooseAttachment() (string, error) {
-	a.mu.Lock()
-	defer a.mu.Unlock()
-	if e := a.ready(); e != nil {
-		return "", e
-	}
-	return wruntime.OpenFileDialog(a.ctx, wruntime.OpenDialogOptions{Title: "选择会话工作目录内的文件（上限 20 MiB）"})
 }

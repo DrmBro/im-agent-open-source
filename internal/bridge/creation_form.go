@@ -242,18 +242,3 @@ func (b *Bridge) runCreationFirstQuestion(parent context.Context, adapter im.Ada
 	_ = b.store.CreationProgress(f.ID, "done", "completed", session.ThreadID, "")
 	_ = adapter.UpdateCard(ctx, f.Address, f.MessageID, im.Card{Title: "新会话首问已完成", Text: summary + "\n首问回复已发送到对应群，可继续在群内交流。"})
 }
-
-func (b *Bridge) OpenCreationFormForThread(ctx context.Context, thread string) error {
-	s, e := b.store.ByThread(thread)
-	if e != nil {
-		return e
-	}
-	if s.Status != "active" {
-		return diagnostics.UserError("请选择活跃会话作为表单发送入口")
-	}
-	adapter := b.channels[s.Address.Connection]
-	if adapter == nil {
-		return errors.New("连接未配置")
-	}
-	return b.openCreationForm(ctx, adapter, im.Message{ID: "local-form:" + store.ID(), Address: s.Address, UserID: s.Owner, Text: "/new"})
-}

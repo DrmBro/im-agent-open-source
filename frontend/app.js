@@ -2,33 +2,11 @@
 'use strict';
 const $ = id => document.getElementById(id);
 const settingsPages=new Set(['connections','codex','limits','watch']);
-const titles = {overview:'概览',assistant:'消息助理',connections:'IM 连接',codex:'Codex 配置',limits:'运行限制',watch:'会话同步',tasks:'任务与附件'};
+const titles = {overview:'概览',assistant:'消息助理',connections:'IM 连接',codex:'Codex 配置',limits:'运行限制',watch:'会话同步'};
 let snapshot, draft, descriptors=[], status={}, localInfo=null, pending=new Map(), dirty=false, busy=false;
-let sourceRefreshAt=0, closureRefreshAt=0, presentationRefreshAt=0, eventRefreshAt=0;
+let sourceRefreshAt=0, eventRefreshAt=0;
 let savedIDs=new Set(), page='overview', polling=false;
-const historyPageState=new Map(),connectionExpansion=new Map();
-function historyPage(kind){if(!historyPageState.has(kind))historyPageState.set(kind,{page:1,size:20,generation:0});return historyPageState.get(kind);}
-async function loadHistoryPage(kind){
- const state=historyPage(kind),generation=++state.generation,requested=state.page,size=state.size;
- let result;
- try{result=await api().GetHistoryPage(kind,requested,size);}catch(error){if(generation!==state.generation||state.page!==requested||state.size!==size)return null;throw error;}
- if(generation!==state.generation||state.page!==requested||state.size!==size)return null;
- state.page=result.page;state.size=result.page_size;return result;
-}
-function appendHistoryPager(parent,result,refresh){
- const state=historyPage(result.kind),pages=Math.max(1,Math.ceil(result.total/result.page_size));
- const bar=node('nav','history-pager');bar.setAttribute('aria-label','列表分页');
- bar.append(node('span','muted',`共 ${result.total} 条 · 第 ${result.page}/${pages} 页`));
- const go=target=>{if(busy)return;state.page=Math.max(1,Math.min(pages,target));state.generation++;task(async()=>{await refresh();const bar=parent.querySelector('.history-pager');if(bar&&page!=='overview')bar.scrollIntoView({block:'nearest'});});};
- for(const [label,target,disabled] of [['首页',1,result.page<=1],['上一页',result.page-1,result.page<=1],['下一页',result.page+1,result.page>=pages],['末页',pages,result.page>=pages]]){
-  const button=node('button','btn small',label);button.type='button';button.disabled=disabled;button.onclick=()=>go(target);bar.append(button);
- }
- const size=node('select');size.setAttribute('aria-label','每页条数');
- for(const value of [10,20,50]){const option=node('option','',`${value} 条/页`);option.value=String(value);size.append(option);}size.value=String(result.page_size);
- size.onchange=()=>{if(busy){size.value=String(state.size);return;}state.size=Number(size.value);state.page=1;state.generation++;task(refresh);};bar.append(size);
- parent.append(bar);if(result.warning)parent.append(node('p','notice warning',result.warning));
-}
-function localHistoryPage(kind,rows){const state=historyPage(kind);state.page=Math.max(1,Math.min(state.page,Math.max(1,Math.ceil(rows.length/state.size))));return {kind,page:state.page,page_size:state.size,total:rows.length,rows:rows.slice((state.page-1)*state.size,state.page*state.size)};}
+const connectionExpansion=new Map();
 function updateConnectionStatuses(){
  const labels={connected:'已连接',connecting:'连接中',reconnecting:'重连中',disconnected:'已断开',failed:'异常',stopped:'已停止'};
  document.querySelectorAll('.connection-live-status').forEach(el=>{const current=(status.connections||[]).find(c=>c.connection===el.dataset.connection);el.textContent=current?(labels[current.phase]||'状态待确认'):'尚未连接';});
@@ -68,7 +46,7 @@ function confirmAction(title,message,{danger=false,confirmText='确认'}={}){ret
  const outside=e=>{if(e.target===d){const r=d.getBoundingClientRect();if(e.clientX<r.left||e.clientX>r.right||e.clientY<r.top||e.clientY>r.bottom)done(false);}};d.addEventListener('click',outside);
  $('confirm-no').onclick=()=>done(false);$('confirm-yes').onclick=()=>done(true);d.showModal();(danger?$('confirm-no'):$('confirm-yes')).focus();
  });}
-function navigate(p){if(p!=='assistant')window.assistantPage?.leave();if(p!=='tasks'){historyPage('drafts').generation++;clearTaskDelivery();if($('desktop-draft-list')){$('desktop-draft-list').replaceChildren();desktopDraftSignature='';}}const changed=page!==p;page=p;Object.keys(titles).forEach(key=>$('page-'+key).hidden=key!==p);document.querySelectorAll('.nav').forEach(n=>{const on=n.dataset.page===p;n.classList.toggle('active',on);if(on)n.setAttribute('aria-current','page');else n.removeAttribute('aria-current');});$('breadcrumb').textContent=titles[p];$('breadcrumb').previousSibling.textContent=(settingsPages.has(p)?'设置':'工作台')+' / ';if(changed)$('main').scrollTop=0;if(p==='assistant')window.assistantPage?.enter();if(p==='tasks')task(refreshTaskCenter);if(p==='overview')refreshBackground().catch(()=>{});}
+function navigate(p){if(p!=='assistant')window.assistantPage?.leave();const changed=page!==p;page=p;Object.keys(titles).forEach(key=>$('page-'+key).hidden=key!==p);document.querySelectorAll('.nav').forEach(n=>{const on=n.dataset.page===p;n.classList.toggle('active',on);if(on)n.setAttribute('aria-current','page');else n.removeAttribute('aria-current');});$('breadcrumb').textContent=titles[p];$('breadcrumb').previousSibling.textContent=(settingsPages.has(p)?'设置':'工作台')+' / ';if(changed)$('main').scrollTop=0;if(p==='assistant')window.assistantPage?.enter();if(p==='overview')refreshBackground().catch(()=>{});}
 function bindValue(parent,label,value,set,{help='',type='text',options=null,pick=null,disabled=false}={}){
  const field=node('div','field'),lab=node('label','',label);const input=node(options?'select':type==='textarea'?'textarea':'input');
  const id='field-'+crypto.randomUUID();input.id=id;lab.htmlFor=id;field.append(lab);
@@ -91,7 +69,6 @@ function renderOverview(){
 }
 function updateStatus(){
  updateConnectionStatuses();
- const reportSend=$('task-delivery-send');if(reportSend)reportSend.disabled=busy||status.phase!=='running';
  const names={stopped:'已停止',starting:'启动中',running:'运行中',stopping:'停止中',failed:'启动或运行失败'};
  const phase=status.phase||'stopped';$('status-title').textContent=names[phase]||phase;
  $('status-dot').className='dot '+phase;$('hero').dataset.phase=phase;
@@ -104,10 +81,6 @@ function updateStatus(){
    $('status-title').textContent='进程运行 · IM 连接异常';$('status-heading').textContent='IM 连接需要检查';$('status-dot').className='dot failed';
   }else if(scan.intake_phase==='degraded'){
    $('status-title').textContent='IM 已连接 · 收件对账异常';$('status-heading').textContent='收件对账需要检查';$('status-dot').className='dot failed';
-  }else if(scan.scan_phase==='failed'){
-   $('status-title').textContent='进程运行 · 自动同步失败';$('status-heading').textContent='会话同步遇到问题';$('status-dot').className='dot failed';
-  }else if(scan.approval_phase==='degraded'||scan.live_phase==='degraded'){
-   $('status-title').textContent='进程运行 · 部分同步需核对';$('status-heading').textContent='请查看同步诊断';$('status-dot').className='dot failed';
   }else if(connections.length&&connections.every(c=>c.phase==='connected')){
    $('status-title').textContent='IM 已连接';$('status-heading').textContent='消息入口已连接';
   }else{$('status-title').textContent='进程运行 · 等待 IM 连接';$('status-heading').textContent='正在连接消息入口';}
@@ -127,13 +100,9 @@ function updateStatus(){
   for(const c of status.connections||[]){const row=node('div','connection-health');row.append(node('strong','',c.connection+' · '+(names[c.phase]||c.phase)),node('p','',c.message),node('p','muted',`收到文字消息 ${c.received} 条，其中白名单拒绝 ${c.rejected} 条`));health.append(row);}
  }
  const diag=status.diagnostics||{};
- $('scan-health').textContent='自动同步：'+(diag.scan_message||'尚未开始');
  $('message-health').textContent='消息处理：'+(diag.message||'尚未收到通过白名单的消息');
  const intake=$('intake-health');if(intake)intake.textContent='收件对账：'+(diag.intake||'尚未完成群历史对账；连接正常不代表消息已收到');
- const live=$('live-sync-health');if(live)live.textContent='实时消息：'+(diag.live_sync||'启动后从新消息开始逐条同步');
- const approval=$('approval-sync-health');if(approval)approval.textContent='审批同步：'+(diag.approval_sync||'等待首次核对桌面审批目录');
  const build=$('build-health');if(build)build.textContent='运行版本：'+(status.build?.revision||'未记录')+' · 源码摘要 '+(status.build?.source_digest||'未记录').slice(0,12);
- renderSyncHealth(diag.sessions||[]);
 
 }
 function renderConnections(){
@@ -231,7 +200,7 @@ $('stop').onclick=()=>task(async()=>{if(!await confirmAction('停止桥接？','
 $('add-connection').onclick=addConnection;
 document.querySelectorAll('[data-page]').forEach(b=>b.onclick=()=>navigate(b.dataset.page));
 document.querySelectorAll('[data-go]').forEach(b=>b.onclick=()=>navigate(b.dataset.go));
-// 键盘快捷键：⌘/Ctrl+1…8 切换页面，⌘/Ctrl+S 保存，Esc 关闭提示条。
+// 键盘快捷键：⌘/Ctrl+1…6 切换页面，⌘/Ctrl+S 保存，Esc 关闭提示条。
 const pageOrder=[...document.querySelectorAll('.nav[data-page]')].map(b=>b.dataset.page);
 document.addEventListener('keydown',e=>{
  if($('confirm-dialog').open)return;
@@ -243,66 +212,11 @@ document.addEventListener('keydown',e=>{
 // 禁止页面导航和拖入文件，防止远程页面进入具有本机绑定的 WebView。
 document.addEventListener('click',e=>{if(e.target.closest('a'))e.preventDefault();});
 window.addEventListener('dragover',e=>e.preventDefault());window.addEventListener('drop',e=>e.preventDefault());
-async function poll(){if(polling||busy)return;polling=true;try{status=await api().GetStatus();updateStatus();if(page==='overview'&&Date.now()-eventRefreshAt>5000)await refreshEventDiagnostics();if(page==='codex'&&!dirty&&Date.now()-sourceRefreshAt>10000)await refreshCodex();if(page==='assistant')await window.assistantPage?.poll();if(page==='tasks'&&Date.now()-taskCenterAt>5000)await refreshTaskCenter();if(page==='watch'&&Date.now()-closureRefreshAt>5000)await refreshClosures();if(page==='watch'&&Date.now()-presentationRefreshAt>5000)await refreshPresentations();}catch{}finally{polling=false;}}
+async function poll(){if(polling||busy)return;polling=true;try{status=await api().GetStatus();updateStatus();if(page==='overview'&&Date.now()-eventRefreshAt>5000)await refreshEventDiagnostics();if(page==='codex'&&!dirty&&Date.now()-sourceRefreshAt>10000)await refreshCodex();if(page==='assistant')await window.assistantPage?.poll();}catch{}finally{polling=false;}}
 (async()=>{
  for(let attempt=0;attempt<40&&!window.go?.desktop?.API;attempt++)await new Promise(resolve=>setTimeout(resolve,100));
  await task(load);setInterval(poll,2000);
 })();
-
-async function refreshClosures(){
- const list=$('closure-list'),warning=$('closure-warning');
- try{
-  const result=await loadHistoryPage('closures');if(!result)return;closureRefreshAt=Date.now();warning.hidden=!result.warning;warning.textContent=result.warning||'';list.replaceChildren();appendHistoryPager(list,{...result,warning:''},refreshClosures);
-  if(!result.closures.length){list.append(node('p','muted','暂无双向关闭记录。启动桥接后监测已绑定会话；需要在飞书后台订阅群解散事件。'));return;}
-  const labels={pending:'待同步 / 重试中',done:'两端已关闭',protected:'原群受保护',topic_archived:'话题会话已归档 · 共享群保留'};
-  for(const item of result.closures){
-   const row=node('div','closure-row');const top=node('div','connection-header');top.append(node('strong','',item.thread_id.slice(0,12)),node('span','badge',item.state==='pending'&&item.chat_closed&&!item.codex_archived?'群已解散 · 会话待归档':(labels[item.state]||item.state)));row.append(top);
-   row.append(node('p','',`${item.connection} · ${item.chat_id}${item.topic_id?' · 话题 '+item.topic_id:''}`));
-   row.append(node('p','',item.topic_id?`Codex：${item.codex_archived?'已归档':'待确认'}　话题入口：${item.state==='topic_archived'?'已标记归档':'待更新'}　共享群不解散`:`Codex：${item.codex_archived?'已归档':'待确认'}　群聊：${item.chat_closed?'已解散':'未确认解散'}　重试次数：${item.attempts}`));
-   if(item.last_error)row.append(node('p','detect-error',item.last_error));
-   if(item.state==='pending'){
-    if(item.next_attempt)row.append(node('p','muted','下次尝试：'+new Date(item.next_attempt*1000).toLocaleString()));
-    const retry=node('button','btn small','立即重试');retry.disabled=status.phase!=='running';retry.onclick=()=>task(async()=>{
-     if(!await confirmAction('重试关闭同步？',item.topic_id?'将继续归档对应 Codex 会话并更新话题入口，不解散共享群。':(item.chat_closed?'将先核对归档结果；上次归档回执未知时仅查询，不重复提交。桌面任务仍在执行或兼容入口不可用时继续等待，不强制关闭桌面。':'将继续归档 Codex，或解散有客户端创建证明的对应独立群聊。此操作不会恢复会话。')))return;
-     await api().RetryClosure(item.thread_id);await refreshClosures();note('已提交重试，处理结果请查看同步记录。');
-    });row.append(retry);
-   }
-   list.append(row);
-  }
- }catch{warning.hidden=false;warning.textContent='无法读取双向同步记录，请稍后刷新。';}
-}
-$('refresh-closures').onclick=()=>task(refreshClosures);
-
-async function refreshPresentations(){
- const list=$('presentation-list'),warning=$('presentation-error');
- try{
-  const result=await loadHistoryPage('presentations');if(!result)return;const rows=result.presentations;presentationRefreshAt=Date.now();list.replaceChildren();warning.hidden=!result.warning;warning.textContent=result.warning||'';appendHistoryPager(list,{...result,warning:''},refreshPresentations);
-  if(!rows.length){list.append(node('p','muted','暂无补齐记录。启动桥接后处理有创建证明的绑定群。'));return;}
-  const historyLabels={pending:'待同步',sending:'发送中',sent:'已同步最近一轮',empty:'当前没有可展示的对话',unknown:'送达不确定，停止自动重发'};
-  const groups=new Map();
-  for(const p of rows){
-   let parent=list;
-   if(p.topic_id){
-    const key=JSON.stringify([p.connection,p.chat_id]);
-    if(!groups.has(key)){
-     const block=node('section','topic-group');block.append(node('h4','','共享群 · '+p.connection),node('p','muted',p.chat_id));
-     const children=node('div','topic-children');block.append(children);list.append(block);groups.set(key,children);
-    }
-    parent=groups.get(key);
-   }
-   const row=node('div','closure-row'),top=node('div','connection-header');top.append(node('strong','',p.name||p.thread_id.slice(-8)),node('span','badge',p.topic_id?(p.name_applied?'话题入口已设置':'话题入口待设置'):(p.name_applied?'群名已设置':'群名待设置')));row.append(top);
-   row.append(node('p','',p.topic_id?'话题：'+p.topic_id+' · Codex：'+p.thread_id.slice(-8):p.connection+' · '+p.chat_id));row.append(node('p','',`历史：${historyLabels[p.history_state]||p.history_state}（${p.history_count} 条）`));
-   if(p.session_status!=='active')row.append(node('p','muted','会话已关闭或关闭中，不再补齐。'));if(p.name_error)row.append(node('p','detect-error',p.name_error));if(p.history_error)row.append(node('p','detect-error',p.history_error));
-   if(p.session_status==='active'&&(!p.name_applied||p.history_state==='pending')&&!['sending','unknown'].includes(p.history_state)){
-    const retry=node('button','btn small','提前重试');retry.disabled=status.phase!=='running';retry.onclick=()=>task(async()=>{
-     await api().RetryPresentation(p.thread_id);await refreshPresentations();note('已安排重试；已送达的历史不会重发。');
-    });row.append(retry);
-   }
-   parent.append(row);
-  }
- }catch{warning.hidden=false;warning.textContent='读取补齐状态失败，请稍后刷新。';}
-}
-$('refresh-presentations').onclick=()=>task(refreshPresentations);
 
 async function refreshEventDiagnostics(){
  const list=$('event-history');if(!list)return;
@@ -315,10 +229,6 @@ async function refreshEventDiagnostics(){
 }
 
 
-let fileThread='',fileKind='file',fileChoices=[],taskCenterAt=0;
-const taskStageNames={steer_submitting:"正在补充到当前轮次",steer_submitted:"补充已送入当前轮次",steer_unknown:"补充回执待核对",not_sent:'尚未发送，可处理原因后重新提交',submission_unconfirmed:'提交结果未确认，请先核对，不要重发',execution_unconfirmed:'已提交，执行结果未确认',execution_failed:'执行失败（已提交，可能有部分结果）',reply_delivery_unconfirmed:'执行已完成，回复同步未确认',delivering_reply:'执行已完成，正在同步回复',waiting_caption:'附件等待任务说明',images_bundled:'附件已合并到任务',images_cancelled:'已取消暂存附件',images_expired:'附件已过期（未执行）',image_batch_failed:'附件组合失败',queued:'本地排队（等待同会话任务／空闲工作者）',waiting_desktop_submit:'等待本机桌面提交入口',checking_desktop:'确认桌面会话与输入区',preserving_draft:'备份并暂存桌面草稿',restoring_draft:'核对并恢复桌面草稿',received:'已接收',starting:'开始处理',resuming:'准备会话',submitting:'提交输入',waiting_model:'已提交，等待执行／回复',completed:'已发送回复',downloading_attachment:'下载附件',waiting_draft:'等待桌面草稿处理',waiting_desktop:'等待输入框',switching_desktop:'切换会话',outcome_unconfirmed:'执行结果待核对',command_completed:'命令完成',command_failed:'命令失败',binding_failed:'会话绑定失败'};
-const transferNames={sent:'已送达',received:'已保存',sending:'发送中',downloading:'下载中',failed:'失败',unknown:'结果待核对'};
-const taskStatusNames={waiting_input:'等待文字说明',bundled:'已合并提交',cancelled:'已取消',expired:'已过期（未执行）',processing:'处理中',done:'完成',failed:'失败',uncertain:'结果未确认',interrupted:'上次运行中断（未自动重放）',queued_failed:'排队失败'};
 async function refreshBackground(){
  const el=$('background-settings');if(!el)return;
  const info=await api().GetBackgroundInfo();el.replaceChildren(node('p','muted',info.message));
@@ -327,177 +237,6 @@ async function refreshBackground(){
  const update=node('button','btn','更新后台程序（需先停止桥接）');
  update.onclick=()=>task(async()=>{if(!await confirmAction('更新后台程序？','只在桥接停止后替换后台程序。已有任务不会重放，登录自启设置将保留。完成后请重新启动桥接。'))return;await api().UpdateBackground();note('后台程序已更新，请启动桥接。');await refreshBackground();});el.append(update);
 }
-function renderRequestResult(row,result){
- if(!result)return;
- const execution={submitted:'已提交，执行结果待确认',completed:'执行已确认完成',failed:'执行已确认失败/中断'};
- const delivery={waiting_execution:'等待执行结果',awaiting_replies:'执行已完成，回复清单待核对',pending:'等待全部回复确认',sent:'全部回复已确认送达',unknown:'回复送达待人工核对，不自动重发',failed:'回复发送明确失败，等待重试',not_applicable:'没有已确认完成的回复清单'};
- row.append(node('p','',`${execution[result.execution]||'执行状态待核对'} · ${delivery[result.delivery]||'投递状态待核对'}`));
- if(result.expected_parts>0)row.append(node('p','muted',`回复片段确认：${result.confirmed_parts}/${result.expected_parts}`));
- if(result.recovered)row.append(node('p','muted','已依据完整回复清单恢复为完成；没有重新执行问题。'));
- if(result.completed_at)row.append(node('p','muted','执行确认：'+new Date(result.completed_at*1000).toLocaleString()));
- if(result.delivered_at)row.append(node('p','muted','送达确认：'+new Date(result.delivered_at*1000).toLocaleString()));
- if(result.observation_error)row.append(node('p','detect-error','只读恢复观察：'+result.observation_error));
- if((result.audit||[]).length){
-  const details=node('details','');details.append(node('summary','','最近状态确认记录'));
-  const names={execution_completed:'确认执行完成',request_unfinished:'请求未完成',reply_delivered:'回复确认送达',reply_delivery_recovered:'回复恢复送达',execution_aborted:'确认执行中断'};
-  for(const a of result.audit){details.append(node('p','muted',`${new Date(a.at*1000).toLocaleString()} · ${names[a.reason]||a.reason} · 原状态：${taskStatusNames[a.previous_status]||a.previous_status} / ${taskStageNames[a.previous_stage]||a.previous_stage}`));if(a.detail)details.append(node('p','',a.detail));}
-  row.append(details);
- }
-}
-// 展示全量本地阶段计数，不从任务列表截断数据推算队列名次。
-function renderWaitingSummary(parent,waiting){
- if(!waiting)return;
- const row=node('div','closure-row');
- row.append(node('strong','','本地等待记录（跨会话）'));
- const counts=[['本地排队',waiting.queued],['等待桌面提交入口',waiting.desktop_submit],['等待草稿处理',waiting.draft],['桌面确认／草稿处理',waiting.desktop_ready],['已提交，等待执行／回复',waiting.model]];
- for(const [label,count] of counts)row.append(node('p','',`${label}：${count} 项`));
- row.append(node('small','muted','快照时间：'+new Date(waiting.captured_at*1000).toLocaleString()));
- row.append(node('p','muted','仅统计本地标记为处理中的对应阶段记录，不受下方最多150条任务列表限制；不是模型服务端队列，不表示排队名次或预计完成时间。阶段变化、断线或后台停止时记录可能滞后。'));
- if(status.phase!=='running')row.append(node('p','muted','后台当前未显示为运行中：以上是留存记录，不代表仍在排队或会自动重放。'));
- parent.append(row);
-}
-let desktopDraftSignature='';
-async function refreshDesktopDrafts(){
- const list=$('desktop-draft-list');if(!list)return;
- const state=historyPage('drafts'),generation=++state.generation,requested=state.page,size=state.size;
- const stale=()=>generation!==state.generation||requested!==state.page||size!==state.size||page!=='tasks';
- try{
-  const view=await api().GetDesktopDrafts(),records=view.records||[];
-  if(stale())return;
-  const paged=localHistoryPage('drafts',records.slice().reverse());const signature=JSON.stringify([view,paged.page,paged.page_size]);if(signature===desktopDraftSignature)return;
-  desktopDraftSignature=signature;list.replaceChildren();appendHistoryPager(list,paged,refreshDesktopDrafts);
-  if(view.warning)list.append(node('p','detect-error',view.warning));
-  if(!records.length){list.append(node('p','muted',view.warning?'当前没有可列出的完整记录；不代表快照文件已丢失。':'没有已保存的桌面草稿快照。'));return;}
-  const states={saved:'已备份，是否移走需核对',suspended:'已暂存，恢复待确认',retained:'请核对并手动恢复',restored:'已确认自动恢复（备份仍保留）'};
-  const reasons={auto_restore_disabled:'自动恢复已关闭，仅保留本机快照',restore_prepare_rpc_failed:'恢复准备通信失败',restore_prepare_rejected:'恢复准备被保护条件拒绝',restore_wait_timeout:'等待输入框清空超时',restore_apply_rpc_failed:'恢复插入通信失败',restore_apply_rejected:'恢复插入被保护条件拒绝',restore_blocked:'恢复期间检测到用户或桌面状态变化',restore_target_changed:'恢复目标会话或编辑器已变化',restore_structure_changed:'恢复时编辑器结构发生变化',restore_not_empty:'输入框尚未确认为空',restore_focus_changed:'恢复时输入框焦点已变化',restore_command_failed:'桌面未接受恢复输入',restore_input_unobserved:'未观察到恢复输入事件',restore_content_mismatch:'恢复后的文本与快照不一致',restore_confirm_rpc_failed:'恢复确认通信失败',restore_confirm_rejected:'恢复确认被保护条件拒绝',snapshot_state_unconfirmed:'恢复成功但快照状态未确认'};
-  for(const record of paged.rows){
-   const row=node('div','closure-row');
-   row.append(node('strong','',states[record.state]||'状态待核对'),node('p','muted',`会话：${record.thread_id} · ${new Date(record.created_at).toLocaleString()}`),node('p','detect-error',record.state==='retained'&&record.reason?`恢复原因：${reasons[record.reason]||record.reason}`:''),node('code','',record.id));
-   const show=node('button','btn small','查看草稿原文（仅本机）');
-   show.onclick=()=>task(async()=>{
-    if(!await confirmAction('在本机显示这条草稿？','原文可能包含隐私信息，只在当前客户端显示，不上传飞书、不写剪贴板、不自动粘贴或发送。请核对目标会话后自行复制恢复。'))return;
-    const text=await api().ReadDesktopDraft(record.id,true);
-    const field=node('textarea');field.readOnly=true;field.rows=8;field.value=text;field.style.width='100%';field.setAttribute('aria-label','草稿原文（只读，仅本机）');
-    const hide=node('button','btn small','隐藏原文');hide.onclick=()=>{field.value='';field.remove();hide.remove();show.disabled=false;};
-    show.disabled=true;row.append(field,hide);
-   });
-   const exportFile=node('button','btn small','导出原文（本机明文文件）');
-   exportFile.onclick=()=>task(async()=>{
-    if(!await confirmAction('导出草稿明文？','导出文件包含完整草稿原文，请选择可信的本机非云同步目录和新文件名。程序不主动上传，但同步软件可能上传所选目录中的文件。不会覆盖已有文件、写剪贴板或自动发送。'))return;
-    const path=await api().ExportDesktopDraft(record.id,true);if(path)note('草稿原文已导出到所选本机文件；请保管好明文文件，加密快照仍保留。');
-   });
-   row.append(show,exportFile,node('p','muted','屏幕仅作预览；如需精确保留原始换行，请显式导出原文，不以预览框复制结果作为字节级备份。'));
-   list.append(row);
-  }
- }catch{if(stale())return;desktopDraftSignature='';list.replaceChildren(node('p','detect-error','无法读取草稿快照列表；未清理或覆盖任何快照，请检查本机快照目录及权限。'));}
-}
-// 任务交付详情独立于轮询列表；只读明确请求，不自动执行模型或认领目录文件。
-let taskDeliveryGeneration=0;
-function clearTaskDelivery(){
- taskDeliveryGeneration++;
- const panel=$('task-delivery-detail');if(panel)panel.remove();
-}
-async function showTaskDelivery(t){
- clearTaskDelivery();const generation=taskDeliveryGeneration;
- const data=await api().GetTaskDelivery(t.thread_id,t.id);
- if(page!=='tasks'||generation!==taskDeliveryGeneration)return;
- const tasks=$('task-list');if(!tasks)return;
- const panel=node('article','panel');panel.id='task-delivery-detail';
- panel.append(node('h3','','本次任务交付'),node('strong','',t.name||data.thread_id),node('code','',data.event_id));
- panel.append(node('p','',data.delivery==='sent'?'原回复：已确认送达':data.delivery==='pending'?'原回复：尚未全部确认送达；报告可查看，不代表原回复已送达':'原回复：送达结果待核对；查看报告不会将其改为已送达'));
- panel.append(node('h4','','结果摘要（最终回复原文摘录）'),node('p','',data.summary));
- panel.append(node('h4','','验证说明'),node('p','muted',data.verification));
- panel.append(node('h4','','本次报告'),node('p','',data.report_name),node('p','muted','由本次已封存的助手回复生成，不扫描项目目录，不保证模型提及的文件由本任务生成。报告发送不改变原任务或原回复状态。'));
- const details=node('details');details.append(node('summary','','查看完整报告'));
- const content=node('pre');content.style.whiteSpace='pre-wrap';content.style.overflowWrap='anywhere';content.style.maxHeight='420px';content.style.overflow='auto';content.textContent=data.report;details.append(content);panel.append(details);
- const save=node('button','btn small','保存报告到本机');
- save.onclick=()=>task(async()=>{
-  if(!await confirmAction('保存本次任务报告？','报告包含这次回复的文本，将保存为本机Markdown文件。请选择可信目录；云同步软件可能上传其中内容。不会覆盖已有文件或执行模型。'))return;
-  const path=await api().ExportTaskReport(data.thread_id,data.event_id,true);
-  if(path)note('本次报告已保存到所选本机文件；原任务未重新执行。');
- });
- const send=node('button','btn small','发送报告到原会话群');send.id='task-delivery-send';send.disabled=status.phase!=='running';
- send.onclick=()=>task(async()=>{
-  if(status.phase!=='running')throw new Error('后台桥接未运行，报告未发送');
-  if(!await confirmAction('分享本次任务报告？',`请求：${data.event_id}\n会话：${t.name||data.thread_id}\n报告将发送到该会话当前有效的绑定群，群成员均可见。不会重新执行问题；已有发送记录不会重复上传，未知结果需先人工核对。`))return;
-  await api().SendTaskReport(data.thread_id,data.event_id,true);
-  note('报告已确认发送，或此前已送达未重复发送。请到对应群查看；原任务未重跑。');await refreshTaskCenter();
- });
- const close=node('button','btn small','收起交付详情');close.onclick=clearTaskDelivery;
- panel.append(save,send,close);const host=tasks.closest('article')||tasks.parentElement;host.before(panel);panel.scrollIntoView({block:'start',behavior:'smooth'});
-}
-function appendTaskDeliveryButton(row,t){
- if(!t.thread_id||t.result?.execution!=='completed')return;
- const view=node('button','btn small','查看本次交付');
- view.onclick=()=>task(()=>showTaskDelivery(t));row.append(view);
-}
-async function refreshTaskSection(kind){
- const result=await loadHistoryPage(kind);if(!result)return;
- const ids={tasks:'task-list',deliveries:'delivery-list',creations:'creation-list',attachments:'attachment-list'};
- const list=$(ids[kind]);if(!list)return;list.replaceChildren();appendHistoryPager(list,result,()=>refreshTaskSection(kind));
- if(kind==='tasks'){
-  renderWaitingSummary(list,result.waiting);
-  for(const t of result.tasks||[]){const row=node('div','closure-row');row.append(node('strong','',t.name||t.thread_id||'历史映射'),node('p','',`${t.state_label||taskStatusNames[t.status]||t.status} · ${new Date(t.received_at*1000).toLocaleString()}`),node('code','',t.id));if(t.waiting_hint&&t.status==='processing')row.append(node('p','muted',t.waiting_hint));if(t.error)row.append(node('p','detect-error',t.error));renderRequestResult(row,t.result);appendTaskDeliveryButton(row,t);list.append(row);}
-  if(!(result.tasks||[]).length)list.append(node('p','muted','本页没有任务历史；已清理的终态记录不再显示。'));
- }else if(kind==='deliveries'){
-  for(const d of result.deliveries||[]){const row=node('div','closure-row');row.append(node('strong','',d.name||d.thread_id),node('p','',`${d.state} · 片段 ${d.part+1}`),node('code','',d.item_id));if(d.error)row.append(node('p','detect-error',d.error));
-   const action=(label,value,confirm)=>{const btn=node('button','btn small',label);btn.disabled=status.phase!=='running';btn.onclick=()=>task(async()=>{if(confirm&&!await confirmAction(label,'此操作只处理当前回复片段，不重新执行模型。请先检查飞书群：确认未收到后重试仍可能重复；已送达请选标记送达。'))return;await api().ResolveDelivery({thread_id:d.thread_id,item_id:d.item_id,part:d.part,action:value,confirmed:!!confirm});await refreshTaskSection('deliveries');await refreshTaskSection('tasks');});row.append(btn);};
-   if(d.state==='pending')action('仅重试投递','retry',false);
-   if(d.state==='unknown'){action('已核实收到，标记送达','confirmed_sent',true);action('已核实未收到，重试','confirmed_missing',true);}list.append(row);
-  }
-  if(!(result.deliveries||[]).length)list.append(node('p','muted','没有待处理的回复投递。'));
- }else if(kind==='creations'){
-  for(const f of result.creations||[]){const row=node('div','closure-row');row.append(node('strong','',f.thread_id||'尚未创建会话'),node('p','',f.state+' · '+f.stage));if(f.error)row.append(node('p','detect-error',f.error));list.append(row);}
-  if(!(result.creations||[]).length)list.append(node('p','muted','本页没有创建历史；发送 /new 可获取一次性创建表单。'));
- }else{
-  for(const f of result.attachments||[]){const row=node('div','closure-row');row.append(node('strong','',f.name),node('p','',`${f.direction==='in'?'接收':'发送'} · ${f.kind} · ${transferNames[f.state]||f.state} · ${new Date(f.updated_at*1000).toLocaleString()}`));if(f.error)row.append(node('p','detect-error',f.error));list.append(row);}
-  if(!(result.attachments||[]).length)list.append(node('p','muted','本页没有附件记录。'));
- }
-}
-let taskTargetsSignature='',taskTargetsGeneration=0;
-async function refreshTaskTargets(){
- const generation=++taskTargetsGeneration;let targets;try{targets=await api().GetTaskTargets();}catch(error){if(generation!==taskTargetsGeneration)return;throw error;}if(generation!==taskTargetsGeneration||page!=='tasks')return;const signature=JSON.stringify(targets);
- if(signature===taskTargetsSignature)return;
- taskTargetsSignature=signature;fileChoices=targets;
- const fields=$('file-send-fields');fields.replaceChildren();
- if(!fileChoices.some(p=>p.thread_id===fileThread))fileThread=fileChoices[0]?.thread_id||'';
- bindValue(fields,'目标会话',fileThread,v=>fileThread=v,{options:fileChoices.map(p=>[p.thread_id,p.name||p.thread_id])});
- bindValue(fields,'发送类型',fileKind,v=>fileKind=v,{options:[['file','文件'],['image','图片（PNG/JPEG/GIF）']]});
-}
-let taskCenterGeneration=0;
-async function refreshTaskCenter(){
- const refreshGeneration=++taskCenterGeneration;
- const ids={tasks:'task-list',deliveries:'delivery-list',creations:'creation-list',attachments:'attachment-list'};
- const sections=['tasks','deliveries','creations','attachments'];
- const jobs=sections.map(kind=>({id:ids[kind],run:()=>refreshTaskSection(kind),version:()=>historyPage(kind).generation}));
- jobs.push({id:'desktop-draft-list',run:refreshDesktopDrafts,version:()=>historyPage('drafts').generation},{id:'file-send-fields',run:refreshTaskTargets,version:()=>taskTargetsGeneration});
- await Promise.allSettled(jobs.map(async job=>{
-  const box=$(job.id);box?.querySelectorAll('.history-read-error').forEach(el=>el.remove());
-  const pending=job.run(),generation=job.version();
-  try{await pending;}catch{
-   // 错误也在本请求自己的完成时处理，并复核该区块代次，不等其它区块结束。
-   if(generation!==job.version()||page!=='tasks'||!box)return;
-   if(job.id==='file-send-fields'){fileChoices=[];fileThread='';taskTargetsSignature='';box.replaceChildren();}
-   box.prepend(node('p','detect-error history-read-error','此区域暂时读取失败，请刷新重试；其它列表和草稿恢复不受影响，原有内容可能已过时。'));
-  }
- }));
- if(refreshGeneration===taskCenterGeneration)taskCenterAt=Date.now();
-}
-$('new-form').onclick=()=>task(async()=>{if(!fileThread)throw new Error('请先选择表单发送入口');await api().OpenCreationForm(fileThread);note('已向所选群发送新建会话表单，请在飞书里选择并提交。');await refreshTaskCenter();});
-$('refresh-tasks').onclick=()=>task(refreshTaskCenter);
-$('send-file').onclick=()=>task(async()=>{
- if(!fileThread)throw new Error('请先选择活跃会话');if(status.phase!=='running')throw new Error('请先启动后台桥接');
- const path=await api().ChooseAttachment();if(!path)return;
- const target=fileChoices.find(p=>p.thread_id===fileThread);
- if(!await confirmAction('确认分享文件？',`发送到「${target?.name||fileThread}」群的所有成员：${path}。只允许会话工作目录内文件，文件内容不会自动执行。`))return;
- $('file-send-status').textContent='上传和发送中，请勿重复点击…';
- try{await api().SendFile({id:crypto.randomUUID(),thread_id:fileThread,path,kind:fileKind});$('file-send-status').textContent='平台已确认发送，请到对应群查看。';}catch(e){$('file-send-status').textContent='发送未确认或失败，请先查看附件记录和群消息，不要直接重发。';throw e;}finally{await refreshTaskCenter();}
-});
-refreshBackground().catch(()=>{});
-
-$('session-status').onclick=()=>task(async()=>{if(!fileThread)throw new Error('请先选择会话群或话题');await api().OpenSessionStatus(fileThread);note('已请求显示或刷新会话小卡片；仅显示卡片不会启动或中断任务。');});
-
-
 // 桌面连接管理只由用户点击触发，不纳入自动刷新或任务重放。
 let desktopLaunchState=null;
 function renderDesktopLaunch(s){
@@ -532,21 +271,3 @@ $('desktop-launch-start').onclick=()=>task(async()=>{
  renderDesktopLaunch(await api().LaunchDesktopApplication(desktopLaunchState.selected,true));
  note(desktopLaunchState.ready?'桌面入口已确认可用；请自行发送新的验收问题，旧问题不会重放。':desktopLaunchState.message,!desktopLaunchState.ready);
 });
-
-function renderSyncHealth(rows){
- const list=$('sync-health-list');if(!list)return;
- list.replaceChildren();
- const stamp=value=>value?new Date(value*1000).toLocaleString():'等待首次采集';
- if(!rows.length){list.append(node('p','muted','尚无活跃会话的同步记录。'));return;}
- for(const v of rows){
-  const row=node('div','closure-row');row.append(node('strong','',v.name||v.thread_id.slice(-8)));
-  row.append(node('p','',`日志已读 ${(v.read_offset/1024).toFixed(1)} KiB；未读 ${(v.unread_bytes/1024).toFixed(1)} KiB；最近扫描 ${stamp(v.read_at)}`));
-  row.append(node('p','',`入账 ${v.messages} 条，已确认送达 ${v.sent_messages} 条；待发送 ${v.pending}、发送中 ${v.sending}、送达待核对 ${v.unknown} 个片段`));
-  row.append(node('p','muted',`摘要状态：${({sent:'已更新',pending:'待更新',sending:'发送中',unknown:'送达待核对',empty:'暂无可展示内容'})[v.history_state]||v.history_state||'等待建立'}；最近投递检查 ${stamp(v.delivery_at)}`));
-  if(v.retry_at)row.append(node('p','muted','下次发送重试：'+stamp(v.retry_at)));
-  for(const [label,value] of [['读取',v.read_error],['投递',v.delivery_error],['历史恢复',v.recovery_error],['摘要更新',v.history_error]])if(value)row.append(node('p','detect-error',label+'：'+value));
-  if(v.read_issues)row.append(node('p','detect-error',`${v.read_issues} 条历史日志需核对，后续消息继续同步。`));
-  if(v.read_at&&Date.now()/1000-v.read_at>90&&status.phase==='running')row.append(node('p','detect-error','超过 90 秒未完成扫描，请查看后台状态。'));
-  list.append(row);
- }
-}

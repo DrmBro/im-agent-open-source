@@ -303,19 +303,6 @@ func (b *Bridge) sessionStatusCommand(ctx context.Context, a im.Adapter, msg im.
 }
 
 // 供本地客户端显示当前会话状态，不进入执行队列、不开群、不运行模型。
-func (b *Bridge) OpenSessionStatusForThread(ctx context.Context, thread string) error {
-	if ctx.Err() != nil {
-		return ctx.Err()
-	}
-	s, e := b.store.ByThread(thread)
-	if e != nil {
-		return e
-	}
-	if s.Status != "active" || !s.Managed {
-		return diagnostics.UserError("请选择活跃的会话群或话题")
-	}
-	return b.showStatusAtBottom(ctx, s, "desktop-status:"+store.ID())
-}
 
 // 只报告展示故障，不更改events或重放问题。通知失败也不会递归产生通知。
 func (b *Bridge) notifyStatusCardFailure(parent context.Context, thread string, request *string, force bool, cause error) {

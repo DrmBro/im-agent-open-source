@@ -74,15 +74,12 @@ func TestTaskCenterAndTransferPersistence(t *testing.T) {
 		t.Fatal(e)
 	}
 	defer db.Close()
-	view, e := TaskCenterSnapshot(dir)
-	if e != nil {
-		t.Fatal(e)
+	var status, state string
+	if err := db.db.QueryRow("SELECT status FROM events WHERE id='event'").Scan(&status); err != nil || status != "interrupted" {
+		t.Fatalf("recovered event: %s, %v", status, err)
 	}
-	if len(view.Tasks) != 1 || view.Tasks[0].Status != "interrupted" {
-		t.Fatal("in-flight task was replayed or lost")
-	}
-	if len(view.Attachments) != 1 || view.Attachments[0].State != "unknown" {
-		t.Fatal("interrupted transfer not uncertain")
+	if err := db.db.QueryRow("SELECT state FROM attachment_transfers WHERE id='file'").Scan(&state); err != nil || state != "unknown" {
+		t.Fatalf("recovered transfer: %s, %v", state, err)
 	}
 }
 

@@ -24,7 +24,7 @@ func (b *Bridge) enqueueDraftRecoveryNotice(parent context.Context, adapter im.A
 		noticeCtx, cancel := context.WithTimeout(ctx, 3*time.Second)
 		defer cancel()
 		_, _ = adapter.SendText(noticeCtx, session.Address,
-			"桌面草稿已有本机加密快照，但未确认自动恢复。请在 IM Agent「任务与附件 → 草稿恢复」查看。此提醒不代表飞书问题提交失败，请核对任务结果，不要直接重发。",
+			"桌面草稿已有本机加密快照，但未确认自动恢复。请在 Codex 桌面核对原会话的输入框。此提醒不代表飞书问题提交失败，请核对任务结果，不要直接重发。",
 			msg.ID+":desktop-draft-recovery")
 	})
 }

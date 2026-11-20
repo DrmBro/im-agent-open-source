@@ -105,19 +105,6 @@ func (c *Client) Wait(ctx context.Context) error {
 		}
 	}
 }
-func (c *Client) LifecycleWarning() string {
-	var out struct {
-		Warning string `json:"warning"`
-	}
-	_ = c.call(context.Background(), "GET", "/lifecycle", nil, &out)
-	return out.Warning
-}
-func (c *Client) RetryClosure(thread string) error {
-	return c.call(context.Background(), "POST", "/retry-closure", map[string]string{"thread": thread}, nil)
-}
-func (c *Client) RetryPresentation(thread string) error {
-	return c.call(context.Background(), "POST", "/retry-presentation", map[string]string{"thread": thread}, nil)
-}
 
 // 使用稳定副本启动。运行中不替换二进制，不因关闭 UI 发送终止信号。
 func (c *Client) Ensure(ctx context.Context) error {

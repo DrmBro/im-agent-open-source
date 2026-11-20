@@ -232,7 +232,9 @@ func Run(parent context.Context, dir string) error {
 		}
 		reply(w, response{}, control.RetryClosure(body.Thread))
 	})
-	registerOperations(mux, control, filepath.Join(dir, "runtime"))
+	registerMessageForward(mux, control)
+	registerPersonalReview(mux, control)
+	registerAssistant(mux, control)
 	server := &http.Server{Handler: Authenticated(token, mux), ReadHeaderTimeout: 3 * time.Second, ReadTimeout: 10 * time.Second, WriteTimeout: 100 * time.Second, IdleTimeout: 30 * time.Second}
 	done := make(chan error, 1)
 	go func() { done <- server.Serve(listener) }()

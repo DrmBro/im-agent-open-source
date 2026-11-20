@@ -1,7 +1,6 @@
 package store
 
 import (
-	"database/sql"
 	"errors"
 	"time"
 )
@@ -84,29 +83,6 @@ func (s *Store) FinishTransfer(id, state, path, platform, hint string) error {
 	}
 	_, e := s.db.Exec("UPDATE attachment_transfers SET state=?,path=?,platform_id=?,error=?,updated_at=? WHERE id=? AND state IN ('sending','downloading')", state, path, platform, hint, time.Now().Unix(), id)
 	return e
-}
-func transfersSnapshot(db *sql.DB) ([]Transfer, error) {
-	var n int
-	if e := db.QueryRow("SELECT count(*) FROM sqlite_master WHERE name='attachment_transfers'").Scan(&n); e != nil {
-		return nil, e
-	}
-	if n == 0 {
-		return []Transfer{}, nil
-	}
-	rows, e := db.Query("SELECT id,thread_id,direction,kind,name,state,error,platform_id,updated_at FROM attachment_transfers ORDER BY updated_at DESC,id LIMIT 100")
-	if e != nil {
-		return nil, e
-	}
-	defer rows.Close()
-	out := []Transfer{}
-	for rows.Next() {
-		var t Transfer
-		if e = rows.Scan(&t.ID, &t.ThreadID, &t.Direction, &t.Kind, &t.Name, &t.State, &t.Error, &t.PlatformID, &t.UpdatedAt); e != nil {
-			return nil, e
-		}
-		out = append(out, t)
-	}
-	return out, rows.Err()
 }
 
 // 入站下载的幂等领取；完整收到的文件只返回原记录，失败只读下载可重新尝试。

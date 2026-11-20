@@ -1,8 +1,8 @@
 package bridge
 
 import (
-	"bytes"
 	"context"
+	"database/sql"
 	"im-agent/internal/config"
 	"im-agent/internal/im"
 	"im-agent/internal/store"
@@ -93,18 +93,13 @@ func TestAttachmentBridgeDoesNotReplayOrLeakPaths(t *testing.T) {
 	if adapter.uploads != 1 || adapter.body != "final result" {
 		t.Fatal("wrong export")
 	}
-	snapshot, e := store.TaskCenterSnapshot(dir)
+	records, e := sql.Open("sqlite", "file:"+filepath.ToSlash(filepath.Join(dir, "sessions.db"))+"?mode=ro")
 	if e != nil {
 		t.Fatal(e)
 	}
-	if len(snapshot.Attachments) != 2 {
-		t.Fatal("transfer records missing")
-	}
-	var buf bytes.Buffer
-	for _, x := range snapshot.Attachments {
-		buf.WriteString(x.Path)
-	}
-	if buf.Len() != 0 {
-		t.Fatal("snapshot exposes local paths")
+	defer records.Close()
+	var total int
+	if e = records.QueryRow("SELECT count(*) FROM attachment_transfers WHERE thread_id=?", s.ThreadID).Scan(&total); e != nil || total != 2 {
+		t.Fatalf("transfer records: %d, %v", total, e)
 	}
 }

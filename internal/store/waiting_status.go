@@ -2,37 +2,8 @@ package store
 
 import (
 	"context"
-	"database/sql"
 	"time"
 )
-
-// WaitingSummary 只统计本地持久化处理中记录，不表示桌面或模型服务端实时队列。
-// 与最多150条的任务展示列表分开读取，不因展示截断而少算；失败/未知/中断不计入。
-type WaitingSummary struct {
-	Queued        int   `json:"queued"`
-	DesktopSubmit int   `json:"desktop_submit"`
-	Draft         int   `json:"draft"`
-	DesktopReady  int   `json:"desktop_ready"`
-	Model         int   `json:"model"`
-	CapturedAt    int64 `json:"captured_at"`
-}
-
-func waitingSummarySnapshot(db *sql.DB) (*WaitingSummary, error) {
-	var out WaitingSummary
-	// events.id 已有主键，一条记录就是一个请求；这里仅按阶段做正常聚合，不去重。
-	e := db.QueryRow(`SELECT count(CASE WHEN stage = 'queued' THEN 1 END),
-       count(CASE WHEN stage = 'waiting_desktop_submit' THEN 1 END),
-       count(CASE WHEN stage = 'waiting_draft' THEN 1 END),
-       count(CASE WHEN stage IN ('checking_desktop', 'waiting_desktop', 'switching_desktop', 'preserving_draft', 'restoring_draft') THEN 1 END),
-       count(CASE WHEN stage = 'waiting_model' THEN 1 END)
-FROM events
-WHERE status = 'processing'`).Scan(&out.Queued, &out.DesktopSubmit, &out.Draft, &out.DesktopReady, &out.Model)
-	if e != nil {
-		return nil, e
-	}
-	out.CapturedAt = time.Now().Unix()
-	return &out, nil
-}
 
 // RequestWaitingHint 由客户端和飞书状态卡共用。结束或结果未知的任务不能显示为正在等待。
 func RequestWaitingHint(task TaskRow) string {

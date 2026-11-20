@@ -43,7 +43,7 @@ func readOnlySnapshot(ctx context.Context, dir string, read func(context.Context
 		return errTaskBoardRead
 	}
 	defer tx.Rollback()
-	tables, err := historyPageTables(ctx, tx)
+	tables, err := snapshotTables(ctx, tx)
 	if err != nil {
 		return errTaskBoardRead
 	}
@@ -61,4 +61,21 @@ func readOnlySnapshot(ctx context.Context, dir string, read func(context.Context
 		return errTaskBoardRead
 	}
 	return nil
+}
+
+func snapshotTables(ctx context.Context, tx *sql.Tx) (map[string]bool, error) {
+	rows, err := tx.QueryContext(ctx, "SELECT name FROM sqlite_master WHERE type = 'table'")
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	tables := map[string]bool{}
+	for rows.Next() {
+		var name string
+		if err = rows.Scan(&name); err != nil {
+			return nil, err
+		}
+		tables[name] = true
+	}
+	return tables, rows.Err()
 }

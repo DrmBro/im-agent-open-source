@@ -5,9 +5,6 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
-	"net/url"
-	"os"
-	"path/filepath"
 	"strings"
 	"time"
 	"unicode/utf8"
@@ -50,40 +47,6 @@ type taskDeliveryReply struct {
 	item          string
 	expectedParts int
 	parts         []taskDeliveryPart
-}
-
-// TaskDeliverySnapshot 仅读取既有普通数据库文件，不初始化目录、不迁移或修改业务数据。
-func TaskDeliverySnapshot(ctx context.Context, dir, thread, event string) (TaskDelivery, error) {
-	if ctx == nil || dir == "" || thread == "" || event == "" {
-		return TaskDelivery{}, ErrTaskDeliveryUnavailable
-	}
-	path, err := filepath.Abs(filepath.Join(dir, "sessions.db"))
-	if err != nil {
-		return TaskDelivery{}, ErrTaskDeliveryUnavailable
-	}
-	info, err := os.Lstat(path)
-	if err != nil || !info.Mode().IsRegular() || info.Mode()&os.ModeSymlink != 0 {
-		return TaskDelivery{}, ErrTaskDeliveryUnavailable
-	}
-	// URI 参数对每个连接生效；mode=ro 保证缺失文件不会被创建。
-	params := url.Values{"mode": {"ro"}, "_pragma": {"busy_timeout(1000)"}}
-	u := url.URL{Scheme: "file", Path: filepath.ToSlash(path), RawQuery: params.Encode()}
-	db, err := sql.Open("sqlite", u.String())
-	if err != nil {
-		return TaskDelivery{}, ErrTaskDeliveryUnavailable
-	}
-	defer db.Close()
-	db.SetMaxOpenConns(1)
-	db.SetMaxIdleConns(1)
-	result, err := (&Store{db: db}).ReadTaskDelivery(ctx, thread, event)
-	if err != nil {
-		return TaskDelivery{}, err
-	}
-	current, err := os.Lstat(path)
-	if err != nil || !current.Mode().IsRegular() || !os.SameFile(info, current) {
-		return TaskDelivery{}, ErrTaskDeliveryUnavailable
-	}
-	return result, nil
 }
 
 // ReadTaskDelivery 在同一事务快照中核对地址、封存清单和每个分片，不读取工作目录。

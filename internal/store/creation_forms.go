@@ -1,7 +1,6 @@
 package store
 
 import (
-	"database/sql"
 	"encoding/json"
 	"errors"
 	"im-agent/internal/im"
@@ -83,24 +82,4 @@ func (s *Store) CreationOwnedThread(thread string) (bool, error) {
 	var n int
 	e := s.db.QueryRow("SELECT count(*) FROM creation_forms WHERE thread_id=?", thread).Scan(&n)
 	return n > 0, e
-}
-func creationFormsSnapshot(db *sql.DB) ([]CreationForm, error) {
-	var n int
-	if e := db.QueryRow("SELECT count(*) FROM sqlite_master WHERE name='creation_forms'").Scan(&n); e != nil || n == 0 {
-		return []CreationForm{}, e
-	}
-	rows, e := db.Query("SELECT id,state,stage,thread_id,error,expires_at FROM creation_forms ORDER BY updated_at DESC LIMIT 50")
-	if e != nil {
-		return nil, e
-	}
-	defer rows.Close()
-	out := []CreationForm{}
-	for rows.Next() {
-		var f CreationForm
-		if e = rows.Scan(&f.ID, &f.State, &f.Stage, &f.ThreadID, &f.Error, &f.ExpiresAt); e != nil {
-			return nil, e
-		}
-		out = append(out, f)
-	}
-	return out, rows.Err()
 }

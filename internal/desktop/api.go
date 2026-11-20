@@ -2,7 +2,6 @@ package desktop
 
 import (
 	"context"
-	"im-agent/internal/bridge"
 	"im-agent/internal/codex"
 	"im-agent/internal/config"
 	"im-agent/internal/desktoplaunch"
@@ -32,49 +31,8 @@ func (a *API) InspectCodex(c config.Codex, workDir string) (codex.LocalInfo, err
 	return a.app.InspectCodex(c, workDir)
 }
 
-func (a *API) GetClosures() (ClosureView, error) { return a.app.GetClosures() }
-func (a *API) RetryClosure(thread string) error  { return a.app.RetryClosure(thread) }
-
-func (a *API) GetPresentations() ([]store.Presentation, error) { return a.app.GetPresentations() }
-func (a *API) RetryPresentation(thread string) error           { return a.app.RetryPresentation(thread) }
-
 func (a *API) GetEventDiagnostics() ([]store.EventDiagnostic, error) {
 	return a.app.GetEventDiagnostics()
-}
-
-func (a *API) GetTaskCenter() (store.TaskCenter, error) {
-	a.app.mu.Lock()
-	defer a.app.mu.Unlock()
-	if e := a.app.ready(); e != nil {
-		return store.TaskCenter{}, e
-	}
-	snapshot, e := a.app.store.Read()
-	if e != nil {
-		return store.TaskCenter{}, e
-	}
-	return store.TaskCenterSnapshot(snapshot.Config.StateDir)
-}
-func (a *API) ResolveDelivery(r store.DeliveryResolution) error {
-	a.app.mu.Lock()
-	defer a.app.mu.Unlock()
-	if e := a.app.ready(); e != nil {
-		return e
-	}
-	return a.app.controller.ResolveDelivery(r)
-}
-
-func (a *API) ChooseAttachment() (string, error) { return a.app.ChooseAttachment() }
-func (a *API) SendFile(r bridge.SendFileRequest) error {
-	a.app.mu.Lock()
-	if e := a.app.ready(); e != nil {
-		a.app.mu.Unlock()
-		return e
-	}
-	client := a.app.controller
-	a.app.mu.Unlock()
-	ctx, cancel := context.WithTimeout(context.Background(), 90*time.Second)
-	defer cancel()
-	return client.SendFile(ctx, r)
 }
 
 type BackgroundInfo struct {
@@ -114,33 +72,6 @@ func (a *API) UpdateBackground() error {
 	return client.RefreshBinary(ctx)
 }
 
-func (a *API) OpenCreationForm(thread string) error {
-	a.app.mu.Lock()
-	if e := a.app.ready(); e != nil {
-		a.app.mu.Unlock()
-		return e
-	}
-	client := a.app.controller
-	a.app.mu.Unlock()
-	ctx, stop := context.WithTimeout(context.Background(), 30*time.Second)
-	defer stop()
-	return client.OpenCreationForm(ctx, thread)
-}
-
-func (a *API) OpenSessionStatus(thread string) error {
-	a.app.mu.Lock()
-	if e := a.app.ready(); e != nil {
-		a.app.mu.Unlock()
-		return e
-	}
-	client := a.app.controller
-	a.app.mu.Unlock()
-	ctx, stop := context.WithTimeout(context.Background(), 30*time.Second)
-	defer stop()
-	return client.OpenSessionStatus(ctx, thread)
-}
-
-// 桌面启动与后台桥接分开控制；不在GetView或状态轮询中自动启动应用。
 func (a *API) InspectDesktopApplication(path string) (desktoplaunch.Status, error) {
 	a.app.mu.Lock()
 	if e := a.app.ready(); e != nil {

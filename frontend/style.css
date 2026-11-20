@@ -181,8 +181,8 @@ p.detect-error:empty{display:none}
 .field{margin-bottom:18px}
 .field:last-child{margin-bottom:0}
 .field>span:first-child{display:block;color:var(--text-2);font-size:12.5px;font-weight:500;margin-bottom:7px}
-.field input:not([type=checkbox]),.field select,.field textarea,main input[type=search],.history-pager select,.board-pager select{width:100%;padding:9px 12px;border:1px solid var(--border-strong);border-radius:7px;color:var(--text);background:var(--surface);outline:none;min-height:38px;transition:border-color .15s,box-shadow .15s}
-.history-pager select,.board-pager select{width:auto;min-height:30px;padding:4px 8px;font-size:12px}
+.field input:not([type=checkbox]),.field select,.field textarea,main input[type=search],.board-pager select{width:100%;padding:9px 12px;border:1px solid var(--border-strong);border-radius:7px;color:var(--text);background:var(--surface);outline:none;min-height:38px;transition:border-color .15s,box-shadow .15s}
+.board-pager select{width:auto;min-height:30px;padding:4px 8px;font-size:12px}
 .field input:hover:not(:disabled),.field select:hover:not(:disabled),.field textarea:hover:not(:disabled){border-color:var(--text-4)}
 .field input:focus,.field select:focus,.field textarea:focus,main input[type=search]:focus,.board-document:focus{border-color:var(--green);box-shadow:0 0 0 3px var(--ring)}
 .field input:disabled,.field select:disabled,.field textarea:disabled{background:var(--surface-3);color:var(--text-4)}
@@ -238,7 +238,6 @@ p.detect-error:empty{display:none}
 .empty p{max-width:360px;margin:6px auto 18px}
 
 /* 列表行（同步、草稿、投递等通用记录） */
-.closure-panel>.connection-header,.presentation-panel>.connection-header{align-items:flex-start;gap:18px}
 .closure-row{padding:14px 0;border-bottom:1px solid var(--border)}
 .closure-row:last-child{border-bottom:0}
 .closure-row>strong{display:block;font-size:13.5px;color:var(--text);margin-bottom:2px;overflow-wrap:anywhere}
@@ -247,13 +246,6 @@ p.detect-error:empty{display:none}
 .closure-row code{margin:6px 0}
 .closure-row details{margin-top:8px}
 .closure-row textarea{margin-top:10px;padding:10px;border:1px solid var(--border-strong);border-radius:7px;background:var(--code-bg);font-size:12.5px;line-height:1.7}
-.topic-group{margin:16px 0;padding:16px;border:1px solid var(--border);border-radius:var(--radius);background:var(--surface-2)}
-.topic-group h4{margin:0 0 6px}
-.topic-group>p{overflow-wrap:anywhere}
-.topic-children{margin-left:6px;padding-left:14px;border-left:3px solid var(--brand-line)}
-.history-pager{display:flex;align-items:center;gap:6px;flex-wrap:wrap;padding:4px 0 12px;border-bottom:1px solid var(--border);margin-bottom:6px}
-.history-pager .muted{margin-right:auto}
-.history-read-error{margin-bottom:8px}
 
 /* 任务看板 */
 .board-empty{text-align:center;padding:48px 18px;color:var(--text-4)}
@@ -320,8 +312,6 @@ dialog.danger #confirm-yes{background:var(--danger);border-color:var(--danger)}
 /* 收尾打磨 */
 .nav-label{letter-spacing:.5px}
 .action-row{display:flex;flex-wrap:wrap;gap:8px;margin:16px 0 4px}
-#file-send-fields{margin-top:14px}
-#file-send-fields .field{margin:0}
 /* 统一折叠面板箭头 */
 #message-forward>summary,.event-diagnostics>summary,.advanced-settings>summary,.closure-row details>summary,.board-detail details>summary{list-style:none;display:flex;align-items:center;gap:8px}
 #message-forward>summary::-webkit-details-marker,.event-diagnostics>summary::-webkit-details-marker,.advanced-settings>summary::-webkit-details-marker,.closure-row details>summary::-webkit-details-marker,.board-detail details>summary::-webkit-details-marker{display:none}

@@ -167,20 +167,14 @@ func TestImagesThenCaptionSubmitOneTurn(t *testing.T) {
 		t.Fatal(e)
 	}
 	for {
-		view, e := store.TaskCenterSnapshot(dir)
+		view, e := db.ReadSessionRequestStatus(s.ThreadID, caption.ID)
 		if e != nil {
 			t.Fatal(e)
 		}
-		finished := false
-		for _, row := range view.Tasks {
-			if row.ID == caption.ID {
-				if row.Status == "failed" {
-					t.Fatal(row.Error)
-				}
-				finished = row.Status == "done"
-			}
+		if view.Task.Status == "failed" {
+			t.Fatal(view.Task.Error)
 		}
-		if finished {
+		if view.Task.Status == "done" {
 			break
 		}
 		select {
