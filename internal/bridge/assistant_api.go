@@ -274,6 +274,8 @@ func (b *Bridge) assistantSearchGroups(ctx context.Context, query string) ([]im.
 	return out, nil
 }
 
+// assistantRecentCached 优先返回已有快照，过期时后台刷新（同一时间只刷新一次），
+// 搜索不等待钉钉分页；只有从未加载过时才同步等待，最多 8 秒。
 func (b *Bridge) assistantRecentCached(ctx context.Context, src im.AssistantSource) []im.RecentConversation {
 	state := b.assistant()
 	state.mu.Lock()
@@ -282,13 +284,41 @@ func (b *Bridge) assistantRecentCached(ctx context.Context, src im.AssistantSour
 	if time.Since(at) < time.Minute {
 		return list
 	}
-	_, dayStart := assistantDay(nowFunc())
-	fresh, err := src.RecentConversations(ctx, dayStart)
-	if err != nil {
-		return list // 读取失败时继续使用旧快照
+	done := b.refreshAssistantRecent(src)
+	if !at.IsZero() {
+		return list
+	}
+	select {
+	case <-done:
+	case <-ctx.Done():
+	case <-time.After(8 * time.Second):
 	}
 	state.mu.Lock()
-	state.recent, state.recentAt = fresh, time.Now()
-	state.mu.Unlock()
-	return fresh
+	defer state.mu.Unlock()
+	return state.recent
+}
+
+func (b *Bridge) refreshAssistantRecent(src im.AssistantSource) <-chan struct{} {
+	state := b.assistant()
+	state.mu.Lock()
+	defer state.mu.Unlock()
+	if state.recentDone != nil {
+		return state.recentDone
+	}
+	done := make(chan struct{})
+	state.recentDone = done
+	go func() {
+		defer close(done)
+		ctx, cancel := context.WithTimeout(context.Background(), 90*time.Second)
+		defer cancel()
+		_, dayStart := assistantDay(nowFunc())
+		fresh, err := src.RecentConversations(ctx, dayStart)
+		state.mu.Lock()
+		if err == nil {
+			state.recent, state.recentAt = fresh, time.Now()
+		}
+		state.recentDone = nil
+		state.mu.Unlock()
+	}()
+	return done
 }

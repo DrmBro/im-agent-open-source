@@ -38,9 +38,10 @@ type assistantState struct {
 	status  string
 	nudged  map[string]int64
 	// 设置页搜索用的短期缓存
-	people   map[string]cachedPeople
-	recent   []im.RecentConversation
-	recentAt time.Time
+	people     map[string]cachedPeople
+	recent     []im.RecentConversation
+	recentAt   time.Time
+	recentDone chan struct{}
 }
 
 func (b *Bridge) assistant() *assistantState {
@@ -74,6 +75,9 @@ func (b *Bridge) assistantSource(connection string) (im.AssistantSource, error) 
 
 func (b *Bridge) syncAssistant(ctx context.Context) {
 	state := b.assistant()
+	if src, err := b.assistantSourceFromSettings(); err == nil {
+		b.refreshAssistantRecent(src) // 未开启时也预热，首次打开设置页即可搜群
+	}
 	timer := time.NewTimer(5 * time.Second)
 	defer timer.Stop()
 	for ctx.Err() == nil {
@@ -127,6 +131,7 @@ func (b *Bridge) assistantCycle(ctx context.Context, settings store.AssistantSet
 	}
 	day, dayStart := assistantDay(time.Now())
 	b.allowAssistantTargets(src, settings, dayStart)
+	b.refreshAssistantRecent(src) // 预热设置页的活跃群列表
 	state.set("正在拉取今日消息")
 	pulled, pullErrors := b.assistantPull(ctx, src, settings, dayStart)
 	state.set("正在分析消息")
