@@ -209,31 +209,45 @@ func (c *Client) SearchPeople(ctx context.Context, query string) ([]im.Person, e
 	return out, nil
 }
 
+// RecentConversations 读取最近有消息的会话。钉钉分页中途超时时 DWS 返回 partial_failure，
+// 已校验的页面仍然可用，因此保留部分结果而不是整体失败。
 func (c *Client) RecentConversations(ctx context.Context, sinceMs int64) ([]im.RecentConversation, error) {
-	raw, err := c.runInDirectory(ctx, "", "", 60*time.Second, "chat", "+recent-conversations", "--start", dwsTime(sinceMs), "--page-delay", "0")
-	if err != nil {
-		return nil, err
+	raw, runErr := c.runPartial(ctx, 60*time.Second, "chat", "+recent-conversations", "--start", dwsTime(sinceMs), "--page-delay", "0")
+	if runErr != nil && raw == nil {
+		return nil, runErr
 	}
-	raw, err = successPayload(raw)
-	if err != nil {
-		return nil, err
+	type conversation struct {
+		ID     string          `json:"conversationId"`
+		Name   string          `json:"name"`
+		Type   string          `json:"type"`
+		Latest json.RawMessage `json:"latestMessageTime"`
 	}
-	var r struct {
-		Conversations []struct {
-			ID     string          `json:"conversationId"`
-			Name   string          `json:"name"`
-			Type   string          `json:"type"`
-			Latest json.RawMessage `json:"latestMessageTime"`
-		} `json:"conversations"`
+	var envelope struct {
+		Outcome string `json:"outcome"`
+		Data    struct {
+			Conversations []conversation `json:"conversations"`
+			Succeeded     []struct {
+				Conversations []conversation `json:"conversations"`
+			} `json:"succeeded"`
+		} `json:"data"`
 	}
-	if json.Unmarshal(raw, &r) != nil || r.Conversations == nil {
+	if json.Unmarshal(raw, &envelope) != nil {
 		return nil, errors.New("最近会话列表格式无效")
 	}
+	list := envelope.Data.Conversations
+	for _, page := range envelope.Data.Succeeded {
+		list = append(list, page.Conversations...)
+	}
+	if list == nil && envelope.Outcome != "success" {
+		return nil, errors.New("钉钉最近会话暂时读取失败，请稍后重试")
+	}
 	out := []im.RecentConversation{}
-	for _, x := range r.Conversations {
-		if !validID(x.ID) || (x.Type != "group" && x.Type != "direct") {
+	seen := map[string]bool{}
+	for _, x := range list {
+		if !validID(x.ID) || seen[x.ID] || (x.Type != "group" && x.Type != "direct") {
 			continue
 		}
+		seen[x.ID] = true
 		out = append(out, im.RecentConversation{ID: x.ID, Name: x.Name, Kind: x.Type, LatestMs: parseDirectoryTime(x.Latest)})
 	}
 	return out, nil

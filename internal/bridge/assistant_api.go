@@ -244,8 +244,11 @@ func (b *Bridge) assistantSearchGroups(ctx context.Context, query string) ([]im.
 		active[c.ID] = c.LatestMs
 	}
 	var all []im.RecentConversation
+	var dirErr error
 	if dir, ok := src.(im.GroupDirectoryAdapter); ok {
-		if groups, e := dir.CategoryGroups(ctx, "all"); e == nil {
+		groups, e := dir.CategoryGroups(ctx, "all")
+		dirErr = e
+		if e == nil {
 			for _, g := range groups {
 				all = append(all, im.RecentConversation{ID: g.ID, Name: g.Name, Kind: "group", LatestMs: max(active[g.ID], g.LastMessageAt)})
 			}
@@ -266,6 +269,9 @@ func (b *Bridge) assistantSearchGroups(ctx context.Context, query string) ([]im.
 		if query == "" || strings.Contains(strings.ToLower(g.Name), query) {
 			out = append(out, g)
 		}
+	}
+	if len(all) == 0 && dirErr != nil {
+		return nil, errors.New("群列表正在后台加载（钉钉接口较慢时需要几分钟），请稍后再搜")
 	}
 	sort.SliceStable(out, func(i, j int) bool { return out[i].LatestMs > out[j].LatestMs })
 	if len(out) > 50 {

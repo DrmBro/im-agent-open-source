@@ -95,6 +95,27 @@ func (c *Client) runInDirectory(ctx context.Context, input, dir string, budget t
 	return out.Bytes(), nil
 }
 
+// runPartial 与 runInDirectory 相同，但命令以非零码退出时仍返回标准输出，
+// 供调用方解析 DWS 的 partial_failure 结果。
+func (c *Client) runPartial(ctx context.Context, budget time.Duration, args ...string) ([]byte, error) {
+	op, cancel := context.WithTimeout(ctx, budget)
+	defer cancel()
+	cmd := c.command(op, args...)
+	var out limitedBuffer
+	out.limit = 4 << 20
+	cmd.Stdout = &out
+	var diagnostic limitedBuffer
+	diagnostic.limit = 64 << 10
+	cmd.Stderr = &diagnostic
+	if err := cmd.Run(); err != nil {
+		if out.Len() > 0 {
+			return out.Bytes(), errors.New("DWS 只返回了部分结果")
+		}
+		return nil, errors.New("DWS 调用未确认成功；请检查登录、权限和本机状态")
+	}
+	return out.Bytes(), nil
+}
+
 func rejectedDWSRequest(raw []byte) bool {
 	var failure struct {
 		Error struct {
