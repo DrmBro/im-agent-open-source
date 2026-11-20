@@ -569,11 +569,18 @@ func (b *Bridge) startAssistantSession(ctx context.Context, src im.AssistantSour
 	}
 	s, err := b.store.ByChat(address)
 	if errors.Is(err, sql.ErrNoRows) {
-		t, err := b.engineForConnection(connection).StartThread(ctx, b.configForMessage(msg))
-		if err != nil {
+		if b.desktop == nil {
+			return "", errors.New("Codex 桌面连接尚未就绪")
+		}
+		cfg := b.desktopDispatchConfig(msg)
+		if err := b.checkCreationPermissionFailure(address); err != nil {
 			return "", err
 		}
-		s = store.Session{ThreadID: t.ID, Address: address, WorkDir: t.Cwd, Owner: msg.UserID, GroupName: x.Title, Fresh: true}
+		t, err := b.desktop.StartConfiguredThread(ctx, cfg, codex.ProjectChoice{Path: cfg.WorkDir}, codex.CreationSelection{Prompt: x.Title})
+		if err != nil {
+			return "", b.recordCreationPermissionFailure(address, t.ID, err)
+		}
+		s = store.Session{ThreadID: t.ID, Address: address, WorkDir: t.Cwd, Owner: msg.UserID, GroupName: x.Title, Fresh: true, DesktopDispatch: true}
 		if err = b.saveSession(s); err != nil {
 			return "", err
 		}

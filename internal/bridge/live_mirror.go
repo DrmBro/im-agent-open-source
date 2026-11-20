@@ -43,7 +43,7 @@ func (b *Bridge) registerLiveOrigin(ctx context.Context, s store.Session, msg im
 	lock.Lock()
 	defer lock.Unlock()
 	if path == "" {
-		if config.UsesDirectCodex(s.Address.Channel) {
+		if config.UsesDirectCodex(s.Address.Channel) && !b.desktopDispatch(s.ThreadID) {
 			return b.store.RegisterNativeSubmissionIntent(s, msg.ID)
 		}
 		return diagnostics.UserError("尚未找到会话日志，无法登记消息来源；本条未提交")

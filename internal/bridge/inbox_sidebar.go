@@ -11,10 +11,10 @@ func (b *Bridge) syncInboxSidebar(ctx context.Context) {
 	ticker := time.NewTicker(2 * time.Second)
 	defer ticker.Stop()
 	for ctx.Err() == nil {
-		thread, connection, title, err := b.store.NextInboxPlacement(ctx)
+		thread, _, title, err := b.store.NextInboxPlacement(ctx)
 		if err == nil {
 			op, cancel := context.WithTimeout(ctx, 10*time.Second)
-			err = b.engineForConnection(connection).PlaceInboxThread(op, thread, title)
+			err = b.engineForThread(thread).PlaceInboxThread(op, thread, title)
 			cancel()
 			if ctx.Err() != nil {
 				return

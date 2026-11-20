@@ -26,8 +26,9 @@ type Session struct {
 	CreatedAt              int64
 	Managed                bool
 	// 以下是创建时元数据，不参与会话映射表的读取。
-	GroupName string
-	Fresh     bool
+	DesktopDispatch bool
+	GroupName       string
+	Fresh           bool
 }
 type Action struct {
 	ID, ThreadID, MessageID, Kind, Payload, Status, UserID string
@@ -307,6 +308,11 @@ func (s *Store) Save(v Session) error {
 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`, v.ThreadID, v.Address.Channel, v.Address.Connection, v.Address.ChatID, v.WorkDir, v.Owner, "active", time.Now().Unix(), time.Now().Unix(), v.Managed, v.Address.TopicID, v.Address.RootMessageID)
 	if e != nil {
 		return e
+	}
+	if v.DesktopDispatch {
+		if _, e = tx.Exec("INSERT INTO assistant_desktop_sessions(thread_id) VALUES(?)", v.ThreadID); e != nil {
+			return e
+		}
 	}
 	if v.Managed {
 		history := "pending"

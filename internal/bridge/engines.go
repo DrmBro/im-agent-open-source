@@ -30,7 +30,26 @@ func (b *Bridge) configForMessage(m im.Message) config.Config {
 	cfg.Codex.InboxSources = m.InboxSources
 	return cfg
 }
+func (b *Bridge) SetDesktop(client *codex.Client) { b.desktop = client }
+func (b *Bridge) desktopDispatch(thread string) bool {
+	route, _ := b.threadChannels.Load(thread)
+	return route == store.DesktopAssistantRoute
+}
+func (b *Bridge) desktopDispatchConfig(m im.Message) config.Config {
+	cfg := b.configForMessage(m)
+	cfg.Codex.SubmissionMode = "native_queue"
+	return cfg
+}
+func (b *Bridge) configForThreadMessage(thread string, m im.Message) config.Config {
+	if b.desktopDispatch(thread) {
+		return b.desktopDispatchConfig(m)
+	}
+	return b.configForMessage(m)
+}
 func (b *Bridge) engineForThread(thread string) *codex.Client {
+	if b.desktopDispatch(thread) {
+		return b.desktop
+	}
 	if channel, ok := b.threadChannels.Load(thread); ok && config.UsesDirectCodex(channel.(string)) {
 		return b.cli
 	}
@@ -38,6 +57,10 @@ func (b *Bridge) engineForThread(thread string) *codex.Client {
 }
 func (b *Bridge) saveSession(s store.Session) error {
 	// 先登记路由，后台扫描即使紧随事务提交也不会误走桌面。
-	b.threadChannels.Store(s.ThreadID, s.Address.Channel)
+	route := s.Address.Channel
+	if s.DesktopDispatch {
+		route = store.DesktopAssistantRoute
+	}
+	b.threadChannels.Store(s.ThreadID, route)
 	return b.store.Save(s)
 }

@@ -152,7 +152,7 @@
   field(grid,'等待回复超时（小时）',String(s.await_hours||4),v=>s.await_hours=Number(v)||4,{type:'number',help:'你问了别人、超过这个时间对方还没答复时，发一次本机通知并标红。等待中的会话跨天继续拉取（最多 7 天）。'});
   check(grid,'包含今天 @我 的群',s.mentions!==false,v=>s.mentions=v,'自动把今天 @你 的群加入拉取范围。');
   check(grid,'跳过机器人消息',s.skip_robots!==false,v=>s.skip_robots=v,'告警、通知类机器人消息不进入分析。');
-  check(grid,'复杂事项自动派发会话',s.auto_session!==false,v=>s.auto_session=v,'“需要我处理”且需要多步工作的事项，自动创建独立 Codex 会话处理；会话的回复仍需你确认后发送。');
+  check(grid,'复杂事项自动派发会话',s.auto_session!==false,v=>s.auto_session=v,'“需要我处理”且需要多步工作的事项，由 Codex 桌面客户端创建会话并处理；会话的回复仍需你确认后发送。');
   check(grid,'会话空闲时提醒读取新消息',!!s.auto_deliver_idle,v=>s.auto_deliver_idle=v,'已派发会话的事项有新消息时只进队列；开启后，会话空闲时追加一条提醒让它去读队列。会话执行中不会被打断。');
   check(grid,'可自动回复的事项直接发送',!!s.auto_send,v=>s.auto_send=v,'默认关闭：助理只拟稿，由你点“确认发送”。开启后将不经确认以你的身份发送，请谨慎。');
   box.append(grid);

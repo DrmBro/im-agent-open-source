@@ -188,8 +188,17 @@ func (c *Client) startConfiguredThread(ctx context.Context, cfg config.Config, p
 	params := Options(cfg)
 	fullAccessCreation(params)
 	params["ephemeral"] = false
-	params["model"] = s.Model
-	params["config"] = map[string]any{"model_reasoning_effort": s.Effort}
+	if cfg.Codex.PersonalReply {
+		if err := personalReplyOptions(cfg, params); err != nil {
+			return Thread{}, err
+		}
+	}
+	if s.Model != "" {
+		params["model"] = s.Model
+	}
+	if s.Effort != "" {
+		params["config"] = map[string]any{"model_reasoning_effort": s.Effort}
+	}
 	params["allowProviderModelFallback"] = false
 	if cfg.Codex.SubmissionMode == "native_queue" || cfg.Codex.SubmissionMode == "desktop_queue" {
 		// 桌面桥接按 rollout 关联首问与回复，空分页线程尚无 rollout。
@@ -219,7 +228,7 @@ func (c *Client) startConfiguredThread(ctx context.Context, cfg config.Config, p
 	if e = verifyFullAccessCreation(raw); e != nil {
 		return t, e
 	}
-	if result.Model != s.Model || result.Effort != s.Effort {
+	if (s.Model != "" && result.Model != s.Model) || (s.Effort != "" && result.Effort != s.Effort) {
 		return t, errors.New("新会话实际模型或思考程度与所选值不一致，未提交首问")
 	}
 	actual, e := config.ExistingDirectory(t.Cwd)

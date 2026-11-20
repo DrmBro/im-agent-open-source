@@ -27,6 +27,7 @@ type Bridge struct {
 	followScheduled     sync.Map
 	personalStartedAt   int64
 	cli                 *codex.Client
+	desktop             *codex.Client
 	threadChannels      sync.Map
 	presentationLocks   sync.Map
 	approvalCardLocks   sync.Map
@@ -73,7 +74,7 @@ func (b *Bridge) Start(parent context.Context) error {
 	ctx, cancel := context.WithCancel(parent)
 	defer cancel()
 	b.personalStartedAt = time.Now().UnixMilli()
-	routes, err := b.store.SessionChannels()
+	routes, err := b.store.SessionRoutes()
 	if err != nil {
 		return err
 	}
@@ -405,7 +406,7 @@ func (b *Bridge) runTurn(ctx context.Context, adapter im.Adapter, s store.Sessio
 	defer finish()
 	// 已确认结束或确定未提交时才释放；未知或仍在执行的轮次保留所有权。
 	defer func() {
-		if adapter.Capabilities().PersonalInbox && (failureKind == requestNotSent || failureKind == requestExecutionFailed || failureKind == requestReplyUnknown || runErr == nil) {
+		if adapter.Capabilities().PersonalInbox && !b.desktopDispatch(s.ThreadID) && (failureKind == requestNotSent || failureKind == requestExecutionFailed || failureKind == requestReplyUnknown || runErr == nil) {
 			op, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 			defer cancel()
 			if err := b.engineForThread(s.ThreadID).ReleaseThread(op, s.ThreadID); err != nil {
@@ -424,7 +425,7 @@ func (b *Bridge) runTurn(ctx context.Context, adapter im.Adapter, s store.Sessio
 		}
 	}
 	_ = b.store.EventStage(msg.ID, s.Address.Key(), "resuming", "")
-	resumed, err := b.engineForThread(s.ThreadID).ResumeThread(turnCtx, b.configForMessage(msg), s.ThreadID)
+	resumed, err := b.engineForThread(s.ThreadID).ResumeThread(turnCtx, b.configForThreadMessage(s.ThreadID, msg), s.ThreadID)
 	if err != nil {
 		return err
 	}

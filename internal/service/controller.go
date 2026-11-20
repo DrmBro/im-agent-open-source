@@ -143,17 +143,24 @@ func (c *Controller) run(ctx context.Context, cfg config.Config, adapters map[st
 		return errors.New("Codex 初始化失败；请确认 CLI 版本、CODEX_HOME 及本机 Codex 配置兼容")
 	}
 	defer cx.Close()
-	routes, err := db.SessionChannels()
+	routes, err := db.SessionRoutes()
 	if err != nil {
 		return errors.New("无法读取会话执行通道，未启动桥接")
 	}
 	needsCLI := false
+	needsDesktopDispatch := false
 	for _, channel := range routes {
+		if channel == store.DesktopAssistantRoute {
+			needsDesktopDispatch = true
+		}
 		if config.UsesDirectCodex(channel) {
 			needsCLI = true
 		}
 	}
 	for _, connection := range cfg.Connections {
+		if config.IsPersonalChannel(connection.Type) {
+			needsDesktopDispatch = true
+		}
 		if config.UsesDirectCodex(connection.Type) {
 			needsCLI = true
 		}
@@ -172,6 +179,17 @@ func (c *Controller) run(ctx context.Context, cfg config.Config, adapters map[st
 			defer cli.Close()
 		}
 	}
+	desktop := cx
+	if needsDesktopDispatch && cfg.Codex.SubmissionMode == "direct" {
+		// 桌面协议客户端只通过宿主发起业务轮次；其辅助连接用于读取元数据与观察日志。
+		desktopConfig := cfg
+		desktopConfig.Codex.SubmissionMode = "native_queue"
+		desktop, e = codex.Start(ctx, desktopConfig)
+		if e != nil {
+			return errors.New("无法初始化派发会话的桌面连接")
+		}
+		defer desktop.Close()
+	}
 	if ctx.Err() != nil {
 		return ctx.Err()
 	}
@@ -187,6 +205,7 @@ func (c *Controller) run(ctx context.Context, cfg config.Config, adapters map[st
 	defer stopOperations()
 	b := bridge.New(cfg, db, cx, adapters, logger)
 	b.SetCLI(cli)
+	b.SetDesktop(desktop)
 	c.mu.Lock()
 	c.bridge = b
 	c.operationContext = operationCtx
