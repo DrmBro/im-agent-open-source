@@ -238,7 +238,7 @@ func (b *Bridge) assistantSearchGroups(ctx context.Context, query string) ([]im.
 	if err != nil {
 		return nil, err
 	}
-	recent := b.assistantRecentCached(ctx, src)
+	recent := b.assistantRecentCached(ctx, src, query == "")
 	active := map[string]int64{}
 	for _, c := range recent {
 		active[c.ID] = c.LatestMs
@@ -298,7 +298,8 @@ func (b *Bridge) assistantSearchGroups(ctx context.Context, query string) ([]im.
 
 // assistantRecentCached 优先返回已有快照，过期时后台刷新（同一时间只刷新一次），
 // 搜索不等待钉钉分页；只有从未加载过时才同步等待，最多 8 秒。
-func (b *Bridge) assistantRecentCached(ctx context.Context, src im.AssistantSource) []im.RecentConversation {
+// wait=false 时（按关键词搜索）只用已有快照排序，不等待首次加载。
+func (b *Bridge) assistantRecentCached(ctx context.Context, src im.AssistantSource, wait bool) []im.RecentConversation {
 	state := b.assistant()
 	state.mu.Lock()
 	list, at := state.recent, state.recentAt
@@ -307,7 +308,7 @@ func (b *Bridge) assistantRecentCached(ctx context.Context, src im.AssistantSour
 		return list
 	}
 	done := b.refreshAssistantRecent(src)
-	if !at.IsZero() {
+	if !at.IsZero() || !wait {
 		return list
 	}
 	select {
