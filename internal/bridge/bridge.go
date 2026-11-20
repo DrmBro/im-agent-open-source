@@ -21,6 +21,8 @@ import (
 
 type Bridge struct {
 	steerScheduled      sync.Map
+	assistantOnce       sync.Once
+	assistantRun        *assistantState
 	followJobs          *queue.Queue
 	followScheduled     sync.Map
 	personalStartedAt   int64
@@ -93,6 +95,7 @@ func (b *Bridge) Start(parent context.Context) error {
 	if err := b.store.InvalidateFinishedPreviewCards(); err != nil {
 		return err
 	}
+	b.primeAssistantTargets()
 	b.statusCardJobs = queue.New(ctx, 2, 32)
 	b.reportJobs = queue.New(ctx, 1, 8)
 	b.controlJobs = queue.New(ctx, 2, 32)
@@ -136,9 +139,7 @@ func (b *Bridge) Start(parent context.Context) error {
 	wg.Add(1)
 	go func() { defer wg.Done(); b.syncInboundQueue(ctx) }()
 	wg.Add(1)
-	go func() { defer wg.Done(); b.syncInboxAnalysis(ctx) }()
-	wg.Add(1)
-	go func() { defer wg.Done(); b.syncInboxTopics(ctx) }()
+	go func() { defer wg.Done(); b.syncAssistant(ctx) }()
 	wg.Add(1)
 	go func() { defer wg.Done(); b.syncInboxSidebar(ctx) }()
 	wg.Add(1)
@@ -255,6 +256,7 @@ func (b *Bridge) processClaimedInbound(ctx context.Context, adapter im.Adapter, 
 			return err
 		}
 		_ = b.store.EventDone(msg.ID, "done")
+		b.RunAssistantNow() // 实时事件只作为提前拉取的信号，分流仍以主动拉取的完整会话为准。
 		return nil
 	}
 	if !adapter.Capabilities().PersonalInbox && len(msg.Attachments) == 0 && strings.HasPrefix(msg.Text, "/") {
@@ -300,62 +302,6 @@ func (b *Bridge) processClaimedInbound(ctx context.Context, adapter im.Adapter, 
 	_ = b.enqueueSessionStatus(session.ThreadID, false, msg.ID)
 	return nil // 入站内容已持久化；队列满只推迟调度，不要求平台再次投递。
 }
-func (b *Bridge) PersonalInbox(ctx context.Context) ([]store.PersonalInboxItem, error) {
-	items, err := b.store.PersonalInbox(ctx, inboxDayStart())
-	if err != nil {
-		return nil, err
-	}
-	for i := range items {
-		row := &items[i]
-		if !row.IsDirect {
-			if dir, ok := b.channels[row.Connection].(interface{ InboxGroupName(string) string }); ok {
-				row.ChatName = dir.InboxGroupName(row.Chat)
-			}
-		}
-	}
-	return items, nil
-}
-func (b *Bridge) CreatePersonalInboxSession(ctx context.Context, ids ...string) error {
-	b.bindMu.Lock()
-	defer b.bindMu.Unlock()
-	m, orderedIDs, e := b.inboxSessionInput(ctx, ids)
-	if e != nil {
-		return e
-	}
-	id := m.ID
-	address, e := im.QuestionAddress(m.Address, store.Hash(id))
-	if e != nil {
-		return e
-	}
-	s, e := b.store.ByChat(address)
-	if errors.Is(e, sql.ErrNoRows) {
-		t, err := b.engineForConnection(m.Address.Connection).StartThread(ctx, b.configForMessage(m))
-		if err != nil {
-			return err
-		}
-		s = store.Session{ThreadID: t.ID, Address: address, WorkDir: t.Cwd, Owner: m.UserID, GroupName: b.threadName(t, m.Address.Connection), Fresh: true}
-		if e = b.saveSession(s); e != nil {
-			return e
-		}
-	} else if e != nil {
-		return e
-	} else if s.Status != "active" {
-		return errors.New("这条消息的独立会话已关闭，请核对处理记录")
-	}
-	if e = b.store.QueuePersonalInbox(s, m, orderedIDs...); e != nil {
-		return e
-	}
-	// 已持久排队；容量不足时由既有恢复调度器继续，不让用户重复提交。
-	m.Address = s.Address
-	_ = b.scheduleInbound(store.QueuedInbound{EventID: m.ID, ThreadID: s.ThreadID, AddressKey: store.Hash(s.Address.Key()), Message: m})
-	return nil
-}
-func (b *Bridge) IgnorePersonalInbox(id string) error {
-	b.bindMu.Lock()
-	defer b.bindMu.Unlock()
-	return b.store.MarkPersonalInbox(id, "ignored")
-}
-
 func (b *Bridge) allowed(connection, user string) bool {
 	for _, c := range b.cfg.Connections {
 		if c.ID == connection {

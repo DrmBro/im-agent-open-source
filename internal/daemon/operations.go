@@ -13,7 +13,7 @@ func registerOperations(mux *http.ServeMux, control *service.Controller, dir str
 	registerTaskDelivery(mux, control)
 	registerMessageForward(mux, control)
 	registerPersonalReview(mux, control)
-	registerPersonalInbox(mux, control)
+	registerAssistant(mux, control)
 	mux.HandleFunc("POST /creation-form", func(w http.ResponseWriter, r *http.Request) {
 		var body struct {
 			Thread string `json:"thread"`

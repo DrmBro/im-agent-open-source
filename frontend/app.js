@@ -2,7 +2,7 @@
 'use strict';
 const $ = id => document.getElementById(id);
 const settingsPages=new Set(['connections','codex','limits','watch']);
-const titles = {overview:'概览','personal-inbox':'个人消息',connections:'IM 连接',codex:'Codex 配置',limits:'运行限制',watch:'会话同步',board:'任务看板',tasks:'任务与附件'};
+const titles = {overview:'概览',assistant:'消息助理',connections:'IM 连接',codex:'Codex 配置',limits:'运行限制',watch:'会话同步',tasks:'任务与附件'};
 let snapshot, draft, descriptors=[], status={}, localInfo=null, pending=new Map(), dirty=false, busy=false;
 let sourceRefreshAt=0, closureRefreshAt=0, presentationRefreshAt=0, eventRefreshAt=0;
 let savedIDs=new Set(), page='overview', polling=false;
@@ -68,7 +68,7 @@ function confirmAction(title,message,{danger=false,confirmText='确认'}={}){ret
  const outside=e=>{if(e.target===d){const r=d.getBoundingClientRect();if(e.clientX<r.left||e.clientX>r.right||e.clientY<r.top||e.clientY>r.bottom)done(false);}};d.addEventListener('click',outside);
  $('confirm-no').onclick=()=>done(false);$('confirm-yes').onclick=()=>done(true);d.showModal();(danger?$('confirm-no'):$('confirm-yes')).focus();
  });}
-function navigate(p){if(p!=='board')window.taskBoard?.leave();if(p!=='personal-inbox')window.personalInbox?.leave();if(p!=='tasks'){historyPage('drafts').generation++;clearTaskDelivery();if($('desktop-draft-list')){$('desktop-draft-list').replaceChildren();desktopDraftSignature='';}}const changed=page!==p;page=p;Object.keys(titles).forEach(key=>$('page-'+key).hidden=key!==p);document.querySelectorAll('.nav').forEach(n=>{const on=n.dataset.page===p;n.classList.toggle('active',on);if(on)n.setAttribute('aria-current','page');else n.removeAttribute('aria-current');});$('breadcrumb').textContent=titles[p];$('breadcrumb').previousSibling.textContent=(settingsPages.has(p)?'设置':'工作台')+' / ';if(changed)$('main').scrollTop=0;if(p==='board')window.taskBoard?.enter();if(p==='personal-inbox')window.personalInbox?.enter();if(p==='tasks')task(refreshTaskCenter);if(p==='overview')refreshBackground().catch(()=>{});}
+function navigate(p){if(p!=='assistant')window.assistantPage?.leave();if(p!=='tasks'){historyPage('drafts').generation++;clearTaskDelivery();if($('desktop-draft-list')){$('desktop-draft-list').replaceChildren();desktopDraftSignature='';}}const changed=page!==p;page=p;Object.keys(titles).forEach(key=>$('page-'+key).hidden=key!==p);document.querySelectorAll('.nav').forEach(n=>{const on=n.dataset.page===p;n.classList.toggle('active',on);if(on)n.setAttribute('aria-current','page');else n.removeAttribute('aria-current');});$('breadcrumb').textContent=titles[p];$('breadcrumb').previousSibling.textContent=(settingsPages.has(p)?'设置':'工作台')+' / ';if(changed)$('main').scrollTop=0;if(p==='assistant')window.assistantPage?.enter();if(p==='tasks')task(refreshTaskCenter);if(p==='overview')refreshBackground().catch(()=>{});}
 function bindValue(parent,label,value,set,{help='',type='text',options=null,pick=null,disabled=false}={}){
  const field=node('div','field'),lab=node('label','',label);const input=node(options?'select':type==='textarea'?'textarea':'input');
  const id='field-'+crypto.randomUUID();input.id=id;lab.htmlFor=id;field.append(lab);
@@ -243,7 +243,7 @@ document.addEventListener('keydown',e=>{
 // 禁止页面导航和拖入文件，防止远程页面进入具有本机绑定的 WebView。
 document.addEventListener('click',e=>{if(e.target.closest('a'))e.preventDefault();});
 window.addEventListener('dragover',e=>e.preventDefault());window.addEventListener('drop',e=>e.preventDefault());
-async function poll(){if(polling||busy)return;polling=true;try{status=await api().GetStatus();updateStatus();if(page==='overview'&&Date.now()-eventRefreshAt>5000)await refreshEventDiagnostics();if(page==='codex'&&!dirty&&Date.now()-sourceRefreshAt>10000)await refreshCodex();if(page==='board')await window.taskBoard?.poll();if(page==='personal-inbox')await window.personalInbox?.poll();if(page==='tasks'&&Date.now()-taskCenterAt>5000)await refreshTaskCenter();if(page==='watch'&&Date.now()-closureRefreshAt>5000)await refreshClosures();if(page==='watch'&&Date.now()-presentationRefreshAt>5000)await refreshPresentations();}catch{}finally{polling=false;}}
+async function poll(){if(polling||busy)return;polling=true;try{status=await api().GetStatus();updateStatus();if(page==='overview'&&Date.now()-eventRefreshAt>5000)await refreshEventDiagnostics();if(page==='codex'&&!dirty&&Date.now()-sourceRefreshAt>10000)await refreshCodex();if(page==='assistant')await window.assistantPage?.poll();if(page==='tasks'&&Date.now()-taskCenterAt>5000)await refreshTaskCenter();if(page==='watch'&&Date.now()-closureRefreshAt>5000)await refreshClosures();if(page==='watch'&&Date.now()-presentationRefreshAt>5000)await refreshPresentations();}catch{}finally{polling=false;}}
 (async()=>{
  for(let attempt=0;attempt<40&&!window.go?.desktop?.API;attempt++)await new Promise(resolve=>setTimeout(resolve,100));
  await task(load);setInterval(poll,2000);

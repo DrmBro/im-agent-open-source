@@ -195,7 +195,10 @@ WHERE status = 'processing' AND NOT EXISTS
 		db.Close()
 		return nil, e
 	}
-	if e = s.migratePersonalInbox(); e != nil {db.Close();return nil,e}
+	if e = s.migratePersonalInbox(); e != nil {
+		db.Close()
+		return nil, e
+	}
 	if e = s.migratePersonalReviews(); e != nil {
 		db.Close()
 		return nil, e

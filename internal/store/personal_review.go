@@ -360,7 +360,7 @@ func (s *Store) ClaimPersonalNotice(event string) (bool, error) {
 }
 func PersonalReviewSnapshot(ctx context.Context, dir, event string) (*PersonalReview, error) {
 	var result *PersonalReview
-	err := taskBoardRead(ctx, dir, func(ctx context.Context, tx *sql.Tx, tables map[string]bool) error {
+	err := readOnlySnapshot(ctx, dir, func(ctx context.Context, tx *sql.Tx, tables map[string]bool) error {
 		if !tables["personal_reviews"] {
 			return nil
 		}

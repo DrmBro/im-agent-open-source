@@ -32,6 +32,8 @@ type Client struct {
 	ready                 map[string]bool
 	followGroups          map[string]int64
 	followReady           map[string]bool
+	assistantPeers        map[string]bool
+	assistantGroups       map[string]bool
 }
 
 func Factory(cfg config.Connection) (im.Adapter, error) {
@@ -86,7 +88,10 @@ func (c *Client) AcceptsMessage(msg im.Message) bool {
 		return false
 	}
 	if msg.IsDirect {
-		return msg.Address.ChatID == c.addressPrefix()+msg.UserID && (c.cfg.PersonalAllDirect || config.Contains(c.cfg.AllowedUsers, msg.UserID))
+		return msg.Address.ChatID == c.addressPrefix()+msg.UserID && (c.cfg.PersonalAllDirect || config.Contains(c.cfg.AllowedUsers, msg.UserID) || c.assistantPeer(msg.UserID))
+	}
+	if c.assistantGroup(strings.TrimPrefix(msg.Address.ChatID, c.accountPrefix()+"group:")) {
+		return true
 	}
 	return c.cfg.PersonalMentions && strings.HasPrefix(msg.Address.ChatID, c.accountPrefix()+"group:") && len(msg.Address.ChatID) > len(c.accountPrefix()+"group:")
 }
@@ -138,11 +143,11 @@ func (c *Client) sendPersonal(ctx context.Context, a im.Address, text, key, body
 	group := ""
 	if strings.HasPrefix(a.ChatID, c.addressPrefix()) {
 		peer := strings.TrimPrefix(a.ChatID, c.addressPrefix())
-		if !validID(peer) || peer == c.self || (!c.cfg.PersonalAllDirect && !config.Contains(c.cfg.AllowedUsers, peer)) {
+		if !validID(peer) || peer == c.self || (!c.cfg.PersonalAllDirect && !config.Contains(c.cfg.AllowedUsers, peer) && !c.assistantPeer(peer)) {
 			return "", errors.New("私聊目标不在当前监听范围内")
 		}
 		target = []string{"--open-dingtalk-id", peer}
-	} else if strings.HasPrefix(a.ChatID, c.accountPrefix()+"group:") && c.cfg.PersonalMentions {
+	} else if strings.HasPrefix(a.ChatID, c.accountPrefix()+"group:") && (c.cfg.PersonalMentions || c.assistantGroup(strings.TrimPrefix(a.ChatID, c.accountPrefix()+"group:"))) {
 		group = strings.TrimPrefix(a.ChatID, c.accountPrefix()+"group:")
 		if !validID(group) {
 			return "", errors.New("原群会话标识无效")

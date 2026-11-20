@@ -13,7 +13,7 @@ type GroupFollowView struct {
 
 func GroupFollowSnapshot(ctx context.Context, dir string) (GroupFollowView, error) {
 	out := GroupFollowView{Tasks: []GroupFollowTask{}, Candidates: []GroupFollowInput{}}
-	err := taskBoardRead(ctx, dir, func(ctx context.Context, tx *sql.Tx, tables map[string]bool) error {
+	err := readOnlySnapshot(ctx, dir, func(ctx context.Context, tx *sql.Tx, tables map[string]bool) error {
 		if !tables["group_follow_tasks"] {
 			return nil
 		}

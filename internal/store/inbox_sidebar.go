@@ -6,8 +6,8 @@ import (
 )
 
 func (s *Store) NextInboxPlacement(ctx context.Context) (thread, connection, title string, err error) {
-	err = s.db.QueryRowContext(ctx, `SELECT q.thread_id,s.connection_id,coalesce(t.title,'') FROM inbox_sidebar_queue q
- JOIN sessions s ON s.thread_id=q.thread_id LEFT JOIN inbox_topics t ON t.event_id=q.event_id
+	err = s.db.QueryRowContext(ctx, `SELECT q.thread_id,s.connection_id,coalesce(t.title,coalesce(a.title,'')) FROM inbox_sidebar_queue q
+ JOIN sessions s ON s.thread_id=q.thread_id LEFT JOIN inbox_topics t ON t.event_id=q.event_id LEFT JOIN assistant_items a ON a.thread_id=q.thread_id
  WHERE s.status='active' AND q.retry_at<=? ORDER BY q.retry_at,q.rowid LIMIT 1`, time.Now().Unix()).Scan(&thread, &connection, &title)
 	return
 }

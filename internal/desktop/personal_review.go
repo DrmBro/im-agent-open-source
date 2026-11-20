@@ -10,7 +10,7 @@ import (
 )
 
 func (a *API) GetPersonalReview(event string) (*store.PersonalReview, error) {
-	ctx, stop, dir, err := a.taskBoardContext()
+	ctx, stop, dir, err := a.localReadContext()
 	if err != nil {
 		return nil, err
 	}
@@ -32,7 +32,7 @@ func (a *API) ReviewGroupFollowup(r store.GroupFollowAction, confirmed bool) err
 	return a.withReviewControl(confirmed, func(ctx context.Context, c *daemon.Client) error { return c.ReviewGroupFollowup(ctx, r) })
 }
 func (a *API) GetGroupFollowups() (store.GroupFollowView, error) {
-	ctx, stop, dir, err := a.taskBoardContext()
+	ctx, stop, dir, err := a.localReadContext()
 	if err != nil {
 		return store.GroupFollowView{}, err
 	}
@@ -54,4 +54,18 @@ func (a *API) withReviewControl(confirmed bool, action func(context.Context, *da
 	ctx, cancel := context.WithTimeout(parent, 15*time.Second)
 	defer cancel()
 	return action(ctx, client)
+}
+
+func (a *API) localReadContext() (context.Context, context.CancelFunc, string, error) {
+	a.app.mu.Lock()
+	defer a.app.mu.Unlock()
+	if err := a.app.ready(); err != nil {
+		return nil, nil, "", err
+	}
+	view, err := a.app.store.Read()
+	if err != nil || a.app.ctx == nil {
+		return nil, nil, "", errors.New("本机配置暂不可读取")
+	}
+	ctx, stop := context.WithTimeout(a.app.ctx, 5*time.Second)
+	return ctx, stop, view.Config.StateDir, nil
 }
