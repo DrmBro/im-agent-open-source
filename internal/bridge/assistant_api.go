@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"strings"
+	"time"
 
 	"im-agent/internal/im"
 	"im-agent/internal/llm"
@@ -89,7 +90,22 @@ func (b *Bridge) Assistant(ctx context.Context, r AssistantRequest) (AssistantRe
 		if err != nil {
 			return out, err
 		}
-		return out, b.sendAssistantReply(ctx, src, x, r.Text)
+		return out, b.sendAssistantReply(ctx, src, x, r.Text, false)
+	case "followup":
+		src, err := b.assistantSourceFromSettings()
+		if err != nil {
+			return out, err
+		}
+		x, err := b.store.AssistantItem(r.ID)
+		if err != nil {
+			return out, err
+		}
+		if !x.Awaiting {
+			return out, errors.New("该事项不在等待回复")
+		}
+		return out, b.sendAssistantReply(ctx, src, x, r.Text, true)
+	case "await", "unawait":
+		return out, b.store.SetAssistantAwaiting(r.ID, r.Action == "await", "")
 	case "reply_reset":
 		return out, b.store.ResetAssistantReply(r.ID)
 	case "session":
@@ -159,6 +175,14 @@ func (b *Bridge) assistantView() (store.AssistantView, error) {
 		status = "运行中：" + status
 	}
 	state.mu.Unlock()
+	hours := settings.AwaitHours
+	if hours <= 0 {
+		hours = 4
+	}
+	limit := nowFunc().Add(-time.Duration(hours) * time.Hour).UnixMilli()
+	for i := range items {
+		items[i].Overdue = items[i].Awaiting && items[i].AwaitingSince > 0 && items[i].AwaitingSince < limit
+	}
 	v := store.AssistantView{Day: day, Items: items, Cursors: cursors, Pending: b.store.PendingAssistantCount(dayStart), Reviews: reviews, Settings: settings, Status: status, LastRun: last}
 	for _, m := range llm.Models(b.cfg.Codex.Home) {
 		v.Models = append(v.Models, m.ID)

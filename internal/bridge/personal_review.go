@@ -131,8 +131,18 @@ func (b *Bridge) notifyPersonalReview(parent context.Context) {
 	ctx, cancel := context.WithTimeout(parent, 5*time.Second)
 	defer cancel()
 	// 沿用本机巡检通知的参数化调用方式；锁屏通知不包含联系人和消息正文。
-	script := "on run argv\ndisplay notification (item 1 of argv) with title \"IM Agent 消息审核\"\nend run"
-	_ = exec.CommandContext(ctx, "/usr/bin/osascript", "-e", script, "个人消息处理结果已更新，请打开 IM Agent 任务看板查看。默认等待你审核后再回复。").Run()
+	_ = exec.CommandContext(ctx, "/usr/bin/osascript", "-e", notifyScript, "个人消息处理结果已更新，请打开 IM Agent 消息助理查看。默认等待你审核后再回复。", "IM Agent 消息审核").Run()
+}
+
+const notifyScript = "on run argv\ndisplay notification (item 1 of argv) with title (item 2 of argv)\nend run"
+
+func notifyLocal(parent context.Context, title, text string) {
+	if runtime.GOOS != "darwin" {
+		return
+	}
+	ctx, cancel := context.WithTimeout(parent, 5*time.Second)
+	defer cancel()
+	_ = exec.CommandContext(ctx, "/usr/bin/osascript", "-e", notifyScript, text, title).Run()
 }
 
 // 只由本机控制 API 调用。将来飞书审核先认证操作者，再复用本方法；不开放给联系人。

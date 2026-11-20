@@ -85,13 +85,13 @@ func TestAssistantTriageSplitsQueuesAndRecordsFeedback(t *testing.T) {
 		t.Fatalf("meeting item should hold m2 and m5, got %d", len(x.Messages))
 	}
 	// 已发送的回复不能重复领取。
-	if _, err = db.ClaimAssistantReply("i2", "三点见"); err != nil {
+	if _, err = db.ClaimAssistantReply("i2", "三点见", false); err != nil {
 		t.Fatal(err)
 	}
-	if _, err = db.ClaimAssistantReply("i2", "三点见"); err == nil {
+	if _, err = db.ClaimAssistantReply("i2", "三点见", false); err == nil {
 		t.Fatal("reply in flight must not be claimed twice")
 	}
-	_ = db.FinishAssistantReply("i2", "sent", "")
+	_ = db.FinishAssistantReply("i2", "sent", "", false)
 	if x, _ = db.AssistantItem("i2"); x.State != "done" || x.ReplyState != "sent" {
 		t.Fatalf("sent reply should close the item: %+v", x)
 	}

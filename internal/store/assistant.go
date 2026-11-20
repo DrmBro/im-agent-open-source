@@ -34,15 +34,22 @@ type AssistantSettings struct {
 	RuleNeedMe      string            `json:"rule_need_me"`
 	RuleAutoReply   string            `json:"rule_auto_reply"`
 	RuleNoReply     string            `json:"rule_no_reply"`
+	AwaitHours      int               `json:"await_hours"`
 }
 
 func DefaultAssistantSettings() AssistantSettings {
-	return AssistantSettings{IntervalSeconds: 120, Mentions: true, SkipRobots: true, AutoSession: true}
+	return AssistantSettings{IntervalSeconds: 120, Mentions: true, SkipRobots: true, AutoSession: true, AwaitHours: 4}
 }
 
 func (a *AssistantSettings) Normalize() error {
 	if a.IntervalSeconds == 0 {
 		a.IntervalSeconds = 120
+	}
+	if a.AwaitHours == 0 {
+		a.AwaitHours = 4
+	}
+	if a.AwaitHours < 1 || a.AwaitHours > 168 {
+		return errors.New("等待回复超时需在 1 至 168 小时之间")
 	}
 	if a.IntervalSeconds < 30 || a.IntervalSeconds > 3600 {
 		return errors.New("拉取间隔需在 30 至 3600 秒之间")
@@ -80,27 +87,32 @@ type AssistantMessage struct {
 }
 
 type AssistantItem struct {
-	ID           string             `json:"id"`
-	Day          string             `json:"day"`
-	Conversation string             `json:"conversation"`
-	Kind         string             `json:"kind"`
-	Peer         string             `json:"peer,omitempty"`
-	ChatName     string             `json:"chat_name"`
-	Title        string             `json:"title"`
-	Category     string             `json:"category"` // need_me, auto_reply, no_reply
-	Complex      bool               `json:"complex"`
-	Reason       string             `json:"reason"`
-	Summary      string             `json:"summary"`
-	Reply        string             `json:"reply,omitempty"`
-	ReplyState   string             `json:"reply_state,omitempty"` // '', sending, sent, unknown, failed
-	ReplyError   string             `json:"reply_error,omitempty"`
-	State        string             `json:"state"` // open, session, done, ignored
-	ThreadID     string             `json:"thread_id,omitempty"`
-	SessionError string             `json:"session_error,omitempty"`
-	CreatedMs    int64              `json:"created_ms"`
-	UpdatedMs    int64              `json:"updated_ms"`
-	Queued       int                `json:"queued"`
-	Messages     []AssistantMessage `json:"messages,omitempty"`
+	ID           string `json:"id"`
+	Day          string `json:"day"`
+	Conversation string `json:"conversation"`
+	Kind         string `json:"kind"`
+	Peer         string `json:"peer,omitempty"`
+	ChatName     string `json:"chat_name"`
+	Title        string `json:"title"`
+	Category     string `json:"category"` // need_me, auto_reply, no_reply
+	Complex      bool   `json:"complex"`
+	Reason       string `json:"reason"`
+	Summary      string `json:"summary"`
+	Reply        string `json:"reply,omitempty"`
+	ReplyState   string `json:"reply_state,omitempty"` // '', sending, sent, unknown, failed
+	ReplyError   string `json:"reply_error,omitempty"`
+	State        string `json:"state"` // open, session, done, ignored
+	ThreadID     string `json:"thread_id,omitempty"`
+	SessionError string `json:"session_error,omitempty"`
+	CreatedMs    int64  `json:"created_ms"`
+	UpdatedMs    int64  `json:"updated_ms"`
+	Queued       int    `json:"queued"`
+	// 等待对方回复：主人发出问题或请求后，对方尚未答复。
+	Awaiting      bool               `json:"awaiting"`
+	AwaitingSince int64              `json:"awaiting_since,omitempty"`
+	AwaitingWho   string             `json:"awaiting_who,omitempty"`
+	Overdue       bool               `json:"overdue,omitempty"`
+	Messages      []AssistantMessage `json:"messages,omitempty"`
 }
 
 type AssistantQueued struct {
@@ -134,6 +146,22 @@ CREATE TABLE IF NOT EXISTS assistant_item_messages(item_id TEXT NOT NULL, messag
 CREATE TABLE IF NOT EXISTS assistant_queue(id INTEGER PRIMARY KEY AUTOINCREMENT, thread_id TEXT NOT NULL, item_id TEXT NOT NULL, message_id TEXT NOT NULL, consumed_at INTEGER NOT NULL DEFAULT 0, created_at INTEGER NOT NULL, UNIQUE(thread_id, message_id));
 CREATE INDEX IF NOT EXISTS assistant_queue_thread ON assistant_queue(thread_id, consumed_at);
 CREATE TABLE IF NOT EXISTS assistant_feedback(id INTEGER PRIMARY KEY AUTOINCREMENT, sender TEXT NOT NULL, chat_name TEXT NOT NULL, text TEXT NOT NULL, from_category TEXT NOT NULL, to_category TEXT NOT NULL, created_at INTEGER NOT NULL);`)
+	if err != nil {
+		return err
+	}
+	for _, col := range []string{"awaiting INTEGER NOT NULL DEFAULT 0", "awaiting_since INTEGER NOT NULL DEFAULT 0", "awaiting_who TEXT NOT NULL DEFAULT ''", "awaiting_notified INTEGER NOT NULL DEFAULT 0"} {
+		name := strings.Fields(col)[0]
+		var n int
+		if err = s.db.QueryRow("SELECT count(*) FROM pragma_table_info('assistant_items') WHERE name=?", name).Scan(&n); err != nil {
+			return err
+		}
+		if n == 0 {
+			if _, err = s.db.Exec("ALTER TABLE assistant_items ADD COLUMN " + col); err != nil {
+				return err
+			}
+		}
+	}
+	_, err = s.db.Exec("CREATE INDEX IF NOT EXISTS assistant_items_awaiting ON assistant_items(awaiting, conversation)")
 	return err
 }
 
@@ -275,19 +303,23 @@ func (s *Store) DeferAssistantMessages(ids []string) error {
 	return nil
 }
 
-const assistantItemColumns = "id,day,conversation,kind,peer,chat_name,title,category,complex,reason,summary,reply,reply_state,reply_error,state,thread_id,session_error,created_ms,updated_ms,(SELECT count(*) FROM assistant_queue q WHERE q.item_id=assistant_items.id AND q.consumed_at=0)"
+const assistantItemColumns = "id,day,conversation,kind,peer,chat_name,title,category,complex,reason,summary,reply,reply_state,reply_error,state,thread_id,session_error,created_ms,updated_ms,(SELECT count(*) FROM assistant_queue q WHERE q.item_id=assistant_items.id AND q.consumed_at=0),awaiting,awaiting_since,awaiting_who"
+
+// 等待回复的事项跨天保留，最多回看 7 天。
+const assistantAwaitWindowMs = 7 * 24 * 3600 * 1000
 
 func scanAssistantItem(row interface{ Scan(...any) error }) (AssistantItem, error) {
 	var x AssistantItem
-	var complex int
-	err := row.Scan(&x.ID, &x.Day, &x.Conversation, &x.Kind, &x.Peer, &x.ChatName, &x.Title, &x.Category, &complex, &x.Reason, &x.Summary, &x.Reply, &x.ReplyState, &x.ReplyError, &x.State, &x.ThreadID, &x.SessionError, &x.CreatedMs, &x.UpdatedMs, &x.Queued)
-	x.Complex = complex != 0
+	var complex, awaiting int
+	err := row.Scan(&x.ID, &x.Day, &x.Conversation, &x.Kind, &x.Peer, &x.ChatName, &x.Title, &x.Category, &complex, &x.Reason, &x.Summary, &x.Reply, &x.ReplyState, &x.ReplyError, &x.State, &x.ThreadID, &x.SessionError, &x.CreatedMs, &x.UpdatedMs, &x.Queued, &awaiting, &x.AwaitingSince, &x.AwaitingWho)
+	x.Complex, x.Awaiting = complex != 0, awaiting != 0
 	return x, err
 }
 
 // OpenAssistantItems 是同一会话里仍可能承接新消息的事项（含已转会话的）。
+// 包括前几天仍在等待对方回复的事项，便于今天的答复归回原事项。
 func (s *Store) OpenAssistantItems(conversation, day string) ([]AssistantItem, error) {
-	rows, err := s.db.Query("SELECT "+assistantItemColumns+" FROM assistant_items WHERE conversation=? AND day=? AND state IN ('open','session') ORDER BY updated_ms DESC LIMIT 20", conversation, day)
+	rows, err := s.db.Query("SELECT "+assistantItemColumns+" FROM assistant_items WHERE conversation=? AND ((day=? AND state IN ('open','session','done')) OR (awaiting=1 AND state<>'ignored' AND created_ms>=?)) ORDER BY updated_ms DESC LIMIT 20", conversation, day, time.Now().UnixMilli()-assistantAwaitWindowMs)
 	if err != nil {
 		return nil, err
 	}
@@ -348,17 +380,24 @@ func (s *Store) ApplyAssistantTriage(assign []AssistantAssignment, resolved []st
 	for _, a := range assign {
 		x := a.Item
 		if a.New {
-			_, err = tx.Exec(`INSERT INTO assistant_items(id,day,conversation,kind,peer,chat_name,title,category,complex,reason,summary,reply,state,created_ms,updated_ms) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
-				x.ID, x.Day, x.Conversation, x.Kind, x.Peer, x.ChatName, x.Title, x.Category, boolInt(x.Complex), x.Reason, x.Summary, x.Reply, x.State, now, now)
+			_, err = tx.Exec(`INSERT INTO assistant_items(id,day,conversation,kind,peer,chat_name,title,category,complex,reason,summary,reply,state,created_ms,updated_ms,awaiting,awaiting_since,awaiting_who) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
+				x.ID, x.Day, x.Conversation, x.Kind, x.Peer, x.ChatName, x.Title, x.Category, boolInt(x.Complex), x.Reason, x.Summary, x.Reply, x.State, now, now, boolInt(x.Awaiting), awaitSince(x.Awaiting, now), x.AwaitingWho)
 		} else if a.Queue {
 			_, err = tx.Exec(`UPDATE assistant_items SET updated_ms=?, summary=CASE WHEN ?<>'' THEN ? ELSE summary END WHERE id=?`, now, x.Summary, x.Summary, x.ID)
 		} else {
 			// 已发送的回复不再覆盖；新消息使事项重新需要判断。
-			_, err = tx.Exec(`UPDATE assistant_items SET title=?, category=?, complex=?, reason=?, summary=?, reply=CASE WHEN reply_state IN ('sending','unknown') THEN reply ELSE ? END, reply_state=CASE WHEN reply_state IN ('sending','unknown') THEN reply_state ELSE '' END, reply_error='', state=CASE WHEN state='session' THEN 'session' ELSE 'open' END, updated_ms=? WHERE id=?`,
-				x.Title, x.Category, boolInt(x.Complex), x.Reason, x.Summary, x.Reply, now, x.ID)
+			_, err = tx.Exec(`UPDATE assistant_items SET title=?, category=?, complex=?, reason=?, summary=?, reply=CASE WHEN reply_state IN ('sending','unknown') THEN reply ELSE ? END, reply_state=CASE WHEN reply_state IN ('sending','unknown') THEN reply_state ELSE '' END, reply_error='', state=CASE WHEN state='session' THEN 'session' WHEN ?='no_reply' THEN 'done' ELSE 'open' END, updated_ms=? WHERE id=?`,
+				x.Title, x.Category, boolInt(x.Complex), x.Reason, x.Summary, x.Reply, x.Category, now, x.ID)
 		}
 		if err != nil {
 			return err
+		}
+		if !a.New {
+			// 主人再次发问时重新计时；对方答复后清除等待。
+			if _, err = tx.Exec(`UPDATE assistant_items SET awaiting_since=CASE WHEN ?=1 THEN ? ELSE 0 END, awaiting=?, awaiting_who=CASE WHEN ?=1 THEN ? ELSE '' END, awaiting_notified=CASE WHEN ?=1 THEN awaiting_notified ELSE 0 END WHERE id=?`,
+				boolInt(x.Awaiting), now, boolInt(x.Awaiting), boolInt(x.Awaiting), x.AwaitingWho, boolInt(x.Awaiting), x.ID); err != nil {
+				return err
+			}
 		}
 		for _, id := range a.Messages {
 			if _, err = tx.Exec("UPDATE assistant_messages SET item_id=? WHERE message_id=? AND item_id=''", x.ID, id); err != nil {
@@ -399,8 +438,15 @@ type AssistantView struct {
 	Models   []string              `json:"models,omitempty"`
 }
 
+func awaitSince(on bool, now int64) int64 {
+	if on {
+		return now
+	}
+	return 0
+}
+
 func (s *Store) AssistantItems(day string) ([]AssistantItem, error) {
-	rows, err := s.db.Query("SELECT "+assistantItemColumns+" FROM assistant_items WHERE day=? ORDER BY CASE state WHEN 'open' THEN 0 WHEN 'session' THEN 1 ELSE 2 END, updated_ms DESC LIMIT 300", day)
+	rows, err := s.db.Query("SELECT "+assistantItemColumns+" FROM assistant_items WHERE day=? OR (awaiting=1 AND state<>'ignored' AND created_ms>=?) ORDER BY CASE state WHEN 'open' THEN 0 WHEN 'session' THEN 1 ELSE 2 END, updated_ms DESC LIMIT 300", day, time.Now().UnixMilli()-assistantAwaitWindowMs)
 	if err != nil {
 		return nil, err
 	}
@@ -506,7 +552,8 @@ func (s *Store) AssistantFeedback(limit int) ([]AssistantFeedback, error) {
 }
 
 // ClaimAssistantReply 将回复置为发送中并返回幂等版本；同一版本重复调用不会再次领取。
-func (s *Store) ClaimAssistantReply(id, text string) (int64, error) {
+// followup=true 用于催办：允许在已发送后再发一条，但发送中或结果待核对时仍拒绝。
+func (s *Store) ClaimAssistantReply(id, text string, followup bool) (int64, error) {
 	tx, err := s.db.Begin()
 	if err != nil {
 		return 0, err
@@ -517,7 +564,7 @@ func (s *Store) ClaimAssistantReply(id, text string) (int64, error) {
 	if err = tx.QueryRow("SELECT reply_state,reply_version FROM assistant_items WHERE id=?", id).Scan(&state, &version); err != nil {
 		return 0, err
 	}
-	if state == "sending" || state == "sent" || state == "unknown" {
+	if state == "sending" || state == "unknown" || (state == "sent" && !followup) {
 		return 0, errors.New("该回复已发送或结果待核对，不重复发送")
 	}
 	version++
@@ -527,13 +574,55 @@ func (s *Store) ClaimAssistantReply(id, text string) (int64, error) {
 	return version, tx.Commit()
 }
 
-func (s *Store) FinishAssistantReply(id, state, detail string) error {
+// await=true 表示这条已发送的消息在等对方答复，开始（或重新）计时。
+func (s *Store) FinishAssistantReply(id, state, detail string, await bool) error {
 	itemState := "open"
 	if state == "sent" {
 		itemState = "done"
 	}
 	_, err := s.db.Exec("UPDATE assistant_items SET reply_state=?, reply_error=?, state=CASE WHEN state='session' THEN state ELSE ? END, updated_ms=? WHERE id=?", state, detail, itemState, time.Now().UnixMilli(), id)
+	if err == nil && state == "sent" && await {
+		err = s.SetAssistantAwaiting(id, true, "")
+	}
 	return err
+}
+
+// SetAssistantAwaiting 手动或发送后切换等待状态；重新开始等待会重置超时提醒。
+func (s *Store) SetAssistantAwaiting(id string, on bool, who string) error {
+	now := time.Now().UnixMilli()
+	r, err := s.db.Exec(`UPDATE assistant_items SET awaiting=?, awaiting_since=?, awaiting_notified=0, awaiting_who=CASE WHEN ?<>'' THEN ? WHEN ?=1 THEN awaiting_who ELSE '' END, updated_ms=? WHERE id=?`,
+		boolInt(on), awaitSince(on, now), who, who, boolInt(on), now, id)
+	if err != nil {
+		return err
+	}
+	if n, _ := r.RowsAffected(); n != 1 {
+		return errors.New("事项不存在")
+	}
+	return nil
+}
+
+// ClaimOverdueAwaiting 领取超时仍未获答复、尚未提醒过的事项，每轮等待只提醒一次。
+func (s *Store) ClaimOverdueAwaiting(beforeMs int64) ([]AssistantItem, error) {
+	rows, err := s.db.Query("SELECT "+assistantItemColumns+" FROM assistant_items WHERE awaiting=1 AND state<>'ignored' AND awaiting_since>0 AND awaiting_since<? AND awaiting_notified=0 LIMIT 20", beforeMs)
+	if err != nil {
+		return nil, err
+	}
+	var out []AssistantItem
+	for rows.Next() {
+		x, err := scanAssistantItem(rows)
+		if err != nil {
+			rows.Close()
+			return nil, err
+		}
+		out = append(out, x)
+	}
+	rows.Close()
+	for _, x := range out {
+		if _, err = s.db.Exec("UPDATE assistant_items SET awaiting_notified=1 WHERE id=? AND awaiting_since=?", x.ID, x.AwaitingSince); err != nil {
+			return nil, err
+		}
+	}
+	return out, rows.Err()
 }
 
 func (s *Store) ResetAssistantReply(id string) error {
@@ -706,4 +795,22 @@ func (s *Store) PersonalInboxState(id string) (string, error) {
 	var x string
 	err := s.db.QueryRow("SELECT state FROM personal_inbox WHERE id=?", id).Scan(&x)
 	return x, err
+}
+
+// AwaitingConversations 返回仍在等待对方答复的会话，供跨天继续拉取。
+func (s *Store) AwaitingConversations(sinceMs int64) ([]AssistantItem, error) {
+	rows, err := s.db.Query("SELECT conversation,kind,peer,chat_name FROM assistant_items WHERE awaiting=1 AND state<>'ignored' AND created_ms>=? GROUP BY conversation", sinceMs)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	out := []AssistantItem{}
+	for rows.Next() {
+		var x AssistantItem
+		if err = rows.Scan(&x.Conversation, &x.Kind, &x.Peer, &x.ChatName); err != nil {
+			return nil, err
+		}
+		out = append(out, x)
+	}
+	return out, rows.Err()
 }

@@ -133,3 +133,58 @@ func TestAssistantSessionPromptMentionsQueue(t *testing.T) {
 		}
 	}
 }
+
+func TestAssistantAwaitingReplyLifecycle(t *testing.T) {
+	db, err := store.New(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	b := &Bridge{store: db}
+	day, start := "2026-11-19", int64(1_000_000)
+	_, _ = db.PutAssistantMessages("direct", "u1", "张三", []im.PulledMessage{
+		{ConversationID: "cidD", MessageID: "m1", SenderID: "me", SenderName: "我", Text: "接口文档今天能给我吗？", CreatedMs: start + 1, Self: true},
+	})
+	reply := func(awaiting bool) func(context.Context, string, string) (string, error) {
+		return func(_ context.Context, _, u string) (string, error) {
+			existing := 0
+			if strings.Contains(u, `"existing":[{`) {
+				existing = 1
+			}
+			return fmt.Sprintf(`{"items":[{"existing":%d,"title":"要接口文档","category":"no_reply","awaiting":%v,"awaiting_who":"张三","summary":"我向张三要文档","messages":[1]}]}`, existing, awaiting), nil
+		}
+	}
+	if err = b.assistantTriageConversation(context.Background(), reply(true), "", "cidD", day, start); err != nil {
+		t.Fatal(err)
+	}
+	items, _ := db.AssistantItems(day)
+	if len(items) != 1 || !items[0].Awaiting || items[0].AwaitingWho != "张三" {
+		t.Fatalf("owner's question should start awaiting: %+v", items)
+	}
+	if over, _ := db.ClaimOverdueAwaiting(items[0].AwaitingSince + 1); len(over) != 1 {
+		t.Fatal("overdue item should be claimed once")
+	}
+	if over, _ := db.ClaimOverdueAwaiting(items[0].AwaitingSince + 1); len(over) != 0 {
+		t.Fatal("overdue item must not be notified twice")
+	}
+	if waiting, _ := db.AwaitingConversations(0); len(waiting) != 1 || waiting[0].Peer != "u1" {
+		t.Fatalf("awaiting conversation should keep being pulled: %+v", waiting)
+	}
+	// 模型误把对方消息标为等待：只有本人最后发言才算等待。
+	_, _ = db.PutAssistantMessages("direct", "u1", "张三", []im.PulledMessage{
+		{ConversationID: "cidD", MessageID: "m2", SenderID: "u1", SenderName: "张三", Text: "下午发你", CreatedMs: start + 2},
+	})
+	if err = b.assistantTriageConversation(context.Background(), reply(true), "", "cidD", day, start); err != nil {
+		t.Fatal(err)
+	}
+	x, _ := db.AssistantItem(items[0].ID)
+	if x.Awaiting || len(x.Messages) != 2 || x.State != "done" {
+		t.Fatalf("their answer should clear awaiting on the same item: %+v", x)
+	}
+	if err = db.SetAssistantAwaiting(x.ID, true, ""); err != nil {
+		t.Fatal(err)
+	}
+	if x, _ = db.AssistantItem(x.ID); !x.Awaiting {
+		t.Fatal("manual awaiting should stick")
+	}
+}

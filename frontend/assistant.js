@@ -5,12 +5,13 @@
  const call=r=>api().Assistant(r);
  const errorText=e=>String(e?.message||e);
  const clock=ms=>ms?new Date(ms).toLocaleTimeString([], {hour:'2-digit',minute:'2-digit'}):'';
- const categories={all:'全部',need_me:'需要我处理',auto_reply:'可自动回复',no_reply:'无需回复',session:'已派发会话',closed:'已完成 / 忽略'};
- const hints={all:'今天的全部事项',need_me:'需要你决策或亲自处理',auto_reply:'助理已拟好回复',no_reply:'通知、知会、他人对话',session:'复杂事项由独立会话处理',closed:'已发送、已处理或忽略'};
+ const categories={all:'全部',need_me:'需要我处理',auto_reply:'可自动回复',no_reply:'无需回复',awaiting:'等待对方回复',session:'已派发会话',closed:'已完成 / 忽略'};
+ const hints={all:'今天的全部事项',need_me:'需要你决策或亲自处理',auto_reply:'助理已拟好回复',no_reply:'通知、知会、他人对话',awaiting:'你问了别人、对方还没答复',session:'复杂事项由独立会话处理',closed:'已发送、已处理或忽略'};
  const replyStates={sending:'发送中',sent:'已发送',unknown:'送达待核对',failed:'发送失败'};
  let view=null,filter='need_me',signature='',refreshAt=0,pending=false,generation=0,editing=null,expanded=new Set();
 
  const current=()=>page==='assistant';
+ const ago=ms=>{if(!ms)return '';const m=Math.max(0,Math.round((Date.now()-ms)/60000));return m<60?m+' 分钟':m<1440?Math.floor(m/60)+' 小时':Math.floor(m/1440)+' 天';};
  // 助理设置独立保存，不标记主配置为“未保存”。
  function field(parent,label,value,set,{help='',type='text',options=null}={}){
   const f=node('div','field'),lab=node('label','',label),input=node(options?'select':'input');input.id='assistant-'+crypto.randomUUID();lab.htmlFor=input.id;
@@ -21,8 +22,8 @@
   const f=node('div','field'),row=node('div','toggle-line'),input=node('input'),lab=node('label','',label);input.type='checkbox';input.checked=!!value;input.id='assistant-'+crypto.randomUUID();lab.htmlFor=input.id;input.onchange=()=>set(input.checked);row.append(input,lab);f.append(row);if(help)f.append(node('small','',help));parent.append(f);
  }
  function show(error){const box=el('assistant-error');box.hidden=!error;box.textContent=error?('操作失败：'+errorText(error)):'';}
- function bucket(x){if(x.state==='session')return 'session';if(x.state==='done'||x.state==='ignored')return x.category==='no_reply'&&x.state==='done'?'no_reply':'closed';return x.category;}
- function countBy(){const c={all:0,need_me:0,auto_reply:0,no_reply:0,session:0,closed:0};for(const x of view?.items||[]){c.all++;c[bucket(x)]++;}return c;}
+ function bucket(x){if(x.awaiting&&x.state!=='ignored')return 'awaiting';if(x.state==='session')return 'session';if(x.state==='done'||x.state==='ignored')return x.category==='no_reply'&&x.state==='done'?'no_reply':'closed';return x.category;}
+ function countBy(){const c={all:0,need_me:0,auto_reply:0,no_reply:0,awaiting:0,session:0,closed:0};for(const x of view?.items||[]){c.all++;c[bucket(x)]++;}return c;}
 
  function renderStatus(){
   const s=el('assistant-status');s.replaceChildren();
@@ -50,6 +51,7 @@
   const head=node('div','assistant-item-head');
   head.append(node('span','chip'+(x.kind==='group'?'':' accent'),x.kind==='group'?'群聊':'单聊'),node('strong','',x.title));
   if(x.complex)head.append(node('span','chip warn','复杂'));
+  if(x.awaiting)head.append(node('span','chip'+(x.overdue?' danger':' accent'),(x.overdue?'已超时 · ':'')+'等'+(x.awaiting_who||'对方')+'回复 '+ago(x.awaiting_since)));
   head.append(node('time','',clock(x.updated_ms)));
   card.append(head,node('p','assistant-chat',x.chat_name||x.conversation));
   if(x.summary)card.append(node('p','assistant-summary',x.summary));
@@ -66,6 +68,11 @@
    if(!x.reply_state||x.reply_state==='failed')actions.append(action('确认发送','primary',async()=>{await call({action:'reply',id:x.id,text:box.value});editing=null;},{title:'发送这条回复？',message:`将以你的钉钉身份发送到「${x.chat_name}」：\n\n${box.value.slice(0,500)}`}));
    if(x.reply_state==='unknown')actions.append(action('已核对未送达，允许重发','',()=>call({action:'reply_reset',id:x.id}),{title:'确认未送达？',message:'请先到钉钉确认对方没有收到，否则重发可能造成重复。'}));
   }
+  if(x.awaiting){
+   const box=node('textarea','assistant-reply');box.rows=2;box.maxLength=4000;box.placeholder='催办内容，例如：方便的话今天给我一下进度？';box.value=editing?.id===x.id+':f'?editing.text:'';box.oninput=()=>{editing={id:x.id+':f',text:box.value};};box.setAttribute('aria-label','催办内容');card.append(box);
+   actions.append(action('发送催办','primary',async()=>{if(!box.value.trim())throw new Error('请填写催办内容');await call({action:'followup',id:x.id,text:box.value});editing=null;},{title:'发送催办？',message:`将以你的钉钉身份发送到「${x.chat_name}」，并重新开始计时：\n\n${box.value.slice(0,500)}`}));
+   actions.append(action('不用等了','',()=>call({action:'unawait',id:x.id})));
+  }else if(x.state!=='ignored')actions.append(action('标记为等待回复','',()=>call({action:'await',id:x.id})));
   if(x.state==='session'){
    card.append(node('p','notice','已派发会话 '+x.thread_id.slice(0,12)+(x.queued?`，队列中有 ${x.queued} 条新消息等待会话读取`:'')));
   }else if(x.state==='open'){
@@ -142,6 +149,7 @@
   const models=[['','跟随 Codex 当前模型'],...(view?.models||[]).map(m=>[m,m])];if(s.model&&!models.some(m=>m[0]===s.model))models.push([s.model,s.model]);
   field(grid,'分析模型',s.model||'',v=>s.model=v,{options:models,help:'模型列表读取自 CC Switch 写入的 Codex 目录，直接调用当前供应商；切换 CC Switch 供应商后自动生效。'});
   field(grid,'拉取间隔（秒）',String(s.interval_seconds||120),v=>s.interval_seconds=Number(v)||120,{type:'number',help:'30 至 3600 秒。收到实时消息时也会提前拉取。'});
+  field(grid,'等待回复超时（小时）',String(s.await_hours||4),v=>s.await_hours=Number(v)||4,{type:'number',help:'你问了别人、超过这个时间对方还没答复时，发一次本机通知并标红。等待中的会话跨天继续拉取（最多 7 天）。'});
   check(grid,'包含今天 @我 的群',s.mentions!==false,v=>s.mentions=v,'自动把今天 @你 的群加入拉取范围。');
   check(grid,'跳过机器人消息',s.skip_robots!==false,v=>s.skip_robots=v,'告警、通知类机器人消息不进入分析。');
   check(grid,'复杂事项自动派发会话',s.auto_session!==false,v=>s.auto_session=v,'“需要我处理”且需要多步工作的事项，自动创建独立 Codex 会话处理；会话的回复仍需你确认后发送。');
