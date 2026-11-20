@@ -270,8 +270,24 @@ func (b *Bridge) assistantSearchGroups(ctx context.Context, query string) ([]im.
 			out = append(out, g)
 		}
 	}
-	if len(all) == 0 && dirErr != nil {
-		return nil, errors.New("群列表正在后台加载（钉钉接口较慢时需要几分钟），请稍后再搜")
+	// 本机群目录可能尚未加载或读取不全：有关键词时再用钉钉服务端搜索补全，结果按关键词缓存 30 分钟。
+	if query != "" {
+		remote, err := b.assistantRemoteGroups(ctx, src, query)
+		have := map[string]bool{}
+		for _, g := range out {
+			have[g.ID] = true
+		}
+		for _, g := range remote {
+			if !have[g.ID] {
+				g.LatestMs = active[g.ID]
+				out = append(out, g)
+			}
+		}
+		if err != nil && len(out) == 0 {
+			return nil, err
+		}
+	} else if len(all) == 0 && dirErr != nil {
+		return nil, errors.New("群列表正在后台加载，可直接输入群名关键词搜索")
 	}
 	sort.SliceStable(out, func(i, j int) bool { return out[i].LatestMs > out[j].LatestMs })
 	if len(out) > 50 {
@@ -327,4 +343,30 @@ func (b *Bridge) refreshAssistantRecent(src im.AssistantSource) <-chan struct{} 
 		state.mu.Unlock()
 	}()
 	return done
+}
+
+type cachedGroups struct {
+	at     time.Time
+	groups []im.RecentConversation
+}
+
+func (b *Bridge) assistantRemoteGroups(ctx context.Context, src im.AssistantSource, query string) ([]im.RecentConversation, error) {
+	state := b.assistant()
+	state.mu.Lock()
+	hit, ok := state.groupSearch[query]
+	state.mu.Unlock()
+	if ok && time.Since(hit.at) < 30*time.Minute {
+		return hit.groups, nil
+	}
+	groups, err := src.SearchGroups(ctx, query)
+	if err != nil {
+		return nil, err
+	}
+	state.mu.Lock()
+	if len(state.groupSearch) > 200 {
+		state.groupSearch = map[string]cachedGroups{}
+	}
+	state.groupSearch[query] = cachedGroups{time.Now(), groups}
+	state.mu.Unlock()
+	return groups, nil
 }

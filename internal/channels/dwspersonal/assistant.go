@@ -209,6 +209,39 @@ func (c *Client) SearchPeople(ctx context.Context, query string) ([]im.Person, e
 	return out, nil
 }
 
+func (c *Client) SearchGroups(ctx context.Context, query string) ([]im.RecentConversation, error) {
+	query = strings.TrimSpace(query)
+	if query == "" || len([]rune(query)) > 40 || strings.HasPrefix(query, "-") {
+		return nil, errors.New("请输入群名关键词")
+	}
+	raw, err := c.run(ctx, "", "chat", "search", "--query", query, "--limit", "20")
+	if err != nil {
+		return nil, err
+	}
+	raw, err = successPayload(raw)
+	if err != nil {
+		return nil, err
+	}
+	var r struct {
+		Result struct {
+			Groups []struct {
+				ID    string `json:"openConversationId"`
+				Title string `json:"title"`
+			} `json:"groups"`
+		} `json:"result"`
+	}
+	if json.Unmarshal(raw, &r) != nil {
+		return nil, errors.New("群搜索结果格式无效")
+	}
+	out := []im.RecentConversation{}
+	for _, g := range r.Result.Groups {
+		if validID(g.ID) && strings.HasPrefix(g.ID, "cid") {
+			out = append(out, im.RecentConversation{ID: g.ID, Name: g.Title, Kind: "group"})
+		}
+	}
+	return out, nil
+}
+
 // RecentConversations 读取最近有消息的会话。钉钉分页中途超时时 DWS 返回 partial_failure，
 // 已校验的页面仍然可用，因此保留部分结果而不是整体失败。
 func (c *Client) RecentConversations(ctx context.Context, sinceMs int64) ([]im.RecentConversation, error) {

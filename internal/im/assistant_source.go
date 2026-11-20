@@ -45,6 +45,8 @@ type AssistantSource interface {
 	// PullMessages 读取 since 之后的消息；by 为 conversation 或 peer。
 	PullMessages(ctx context.Context, by, id string, sinceMs int64) ([]PulledMessage, error)
 	SearchPeople(ctx context.Context, query string) ([]Person, error)
+	// SearchGroups 使用平台的群名称搜索，不依赖本机群目录是否已加载完整。
+	SearchGroups(ctx context.Context, query string) ([]RecentConversation, error)
 	RecentConversations(ctx context.Context, sinceMs int64) ([]RecentConversation, error)
 	MentionsSince(ctx context.Context, sinceMs int64) ([]Mention, error)
 }
