@@ -8,6 +8,7 @@ import (
 	"strings"
 	"time"
 
+	"im-agent/internal/codex"
 	"im-agent/internal/im"
 	"im-agent/internal/llm"
 	"im-agent/internal/store"
@@ -119,7 +120,9 @@ func (b *Bridge) Assistant(ctx context.Context, r AssistantRequest) (AssistantRe
 			return out, err
 		}
 		return out, nil
-	case "supplement":
+	case "supplement", "redispatch":
+		b.bindMu.Lock()
+		defer b.bindMu.Unlock()
 		x, err := b.store.AssistantItem(r.ID)
 		if err != nil {
 			return out, err
@@ -131,8 +134,13 @@ func (b *Bridge) Assistant(ctx context.Context, r AssistantRequest) (AssistantRe
 		if err != nil {
 			return out, err
 		}
-		if s.Status != "active" {
-			return out, errors.New("原会话已关闭")
+		recovering := r.Action == "redispatch"
+		if recovering {
+			if r.Thread == "" || r.Thread != x.ThreadID || s.Status != "archived" || x.Queued == 0 || r.Through > x.QueueThrough {
+				return out, errors.New("事项的会话或待补充消息已变化，请刷新")
+			}
+		} else if s.Status != "active" {
+			return out, errors.New("原会话已关闭，请刷新事项后重新派发")
 		}
 		wire, err := s.Address.DeliveryAddress()
 		if err != nil {
@@ -142,6 +150,23 @@ func (b *Bridge) Assistant(ctx context.Context, r AssistantRequest) (AssistantRe
 		msg := im.Message{ID: "assistant-batch:" + store.Hash(x.ID+":"+fmt.Sprint(r.Through)), Address: wire, UserID: s.Owner, InboxSources: []string{source}, ConversationID: x.Conversation, IsDirect: x.Kind == "direct", ReusedDesktop: b.desktopDispatch(s.ThreadID)}
 		if !b.messageAllowed(b.channels[wire.Connection], msg) {
 			return out, errors.New("原对话权限已变化")
+		}
+		if recovering {
+			address, err := im.QuestionAddress(wire, store.Hash(source+":"+s.ThreadID))
+			if err != nil {
+				return out, err
+			}
+			msg.ReusedDesktop = false
+			s, err = b.assistantTargetSession(ctx, x, address, &msg)
+			if err != nil {
+				return out, err
+			}
+			msg.Text = "事项摘要：" + clipRunes(x.Summary, 600)
+			if len(x.Messages) > 0 {
+				first := x.Messages[0]
+				msg.Text += "\n最早的关联消息：" + clipRunes(first.Text+" "+first.Quoted, 600)
+			}
+			msg.Text += "\n" + codex.OwnerAnalysisInstructions
 		}
 		return out, b.store.QueueAssistantBatch(ctx, x, s, msg, r.Through, b.cfg.Limits.MaxInputChars)
 	case "compose":

@@ -588,14 +588,26 @@ func (b *Bridge) startAssistantSession(ctx context.Context, src im.AssistantSour
 	if current.ThreadID != "" {
 		return current.ThreadID, nil
 	}
+	s, err := b.assistantTargetSession(ctx, x, address, &msg)
+	if err != nil {
+		return "", err
+	}
+	if err = b.queueAssistantInput(s, msg); err != nil {
+		return "", err
+	}
+	return s.ThreadID, b.store.LinkAssistantSession(x.ID, s.ThreadID, "")
+}
+
+// 调用者持有 bindMu，同一问题地址优先复用已经保存的派发目标。
+func (b *Bridge) assistantTargetSession(ctx context.Context, x store.AssistantItem, address im.Address, msg *im.Message) (store.Session, error) {
 	s, err := b.store.ByChat(address)
 	if errors.Is(err, sql.ErrNoRows) {
 		if b.desktop == nil {
-			return "", errors.New("Codex 桌面连接尚未就绪")
+			return store.Session{}, errors.New("Codex 桌面连接尚未就绪")
 		}
-		match, err := b.matchAssistantThread(ctx, x, wire)
+		match, err := b.matchAssistantThread(ctx, x, msg.Address)
 		if err != nil {
-			return "", fmt.Errorf("核对桌面活跃会话失败：%w", err)
+			return store.Session{}, fmt.Errorf("核对桌面活跃会话失败：%w", err)
 		}
 		if match != nil {
 			msg.ReusedDesktop = true
@@ -605,29 +617,31 @@ func (b *Bridge) startAssistantSession(ctx context.Context, src im.AssistantSour
 				err = b.saveSession(s)
 			}
 			if err != nil {
-				return "", err
+				return store.Session{}, err
 			}
 		} else {
-			cfg := b.desktopDispatchConfig(msg)
+			cfg := b.desktopDispatchConfig(*msg)
 			if err := b.checkCreationPermissionFailure(address); err != nil {
-				return "", err
+				return store.Session{}, err
 			}
 			t, err := b.desktop.StartConfiguredThread(ctx, cfg, codex.ProjectChoice{Path: cfg.WorkDir}, codex.CreationSelection{Prompt: x.Title})
 			if err != nil {
-				return "", b.recordCreationPermissionFailure(address, t.ID, err)
+				return store.Session{}, b.recordCreationPermissionFailure(address, t.ID, err)
 			}
 			s = store.Session{ThreadID: t.ID, Address: address, WorkDir: t.Cwd, Owner: msg.UserID, GroupName: x.Title, Fresh: true, DesktopDispatch: true}
 			if err = b.saveSession(s); err != nil {
-				return "", err
+				return store.Session{}, err
 			}
 		}
 	} else if err != nil {
-		return "", err
+		return store.Session{}, err
+	} else {
+		msg.ReusedDesktop = true
 	}
-	if err = b.queueAssistantInput(s, msg); err != nil {
-		return "", err
+	if s.Status != "" && s.Status != "active" {
+		return store.Session{}, errors.New("目标会话已关闭，请刷新事项")
 	}
-	return s.ThreadID, b.store.LinkAssistantSession(x.ID, s.ThreadID, "")
+	return s, nil
 }
 
 // assistantNudge 在会话空闲时提醒它有新消息待读；会话忙碌时只保留队列。

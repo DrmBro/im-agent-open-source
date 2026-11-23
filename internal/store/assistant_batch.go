@@ -28,8 +28,35 @@ func (s *Store) QueueAssistantBatch(ctx context.Context, item AssistantItem, ses
 	defer tx.Rollback()
 	source := msg.Address
 	wire, err := session.Address.DeliveryAddress()
-	if err != nil || wire.Key() != source.Key() || session.ThreadID != item.ThreadID {
+	if err != nil || wire.Key() != source.Key() {
 		return errors.New("补充消息目标已改变")
+	}
+	var targetActive bool
+	if err := tx.QueryRowContext(ctx, "SELECT EXISTS(SELECT 1 FROM sessions WHERE thread_id=? AND status='active')", session.ThreadID).Scan(&targetActive); err != nil {
+		return err
+	}
+	if !targetActive {
+		return errors.New("目标会话已关闭，请刷新事项")
+	}
+	moving := session.ThreadID != item.ThreadID
+	if moving {
+		result, err := tx.ExecContext(ctx, `UPDATE assistant_items SET thread_id=?,session_error='',updated_ms=? WHERE id=? AND thread_id=? AND state='session'
+AND EXISTS(SELECT 1 FROM sessions WHERE thread_id=assistant_items.thread_id AND status='archived')
+AND EXISTS(SELECT 1 FROM assistant_queue WHERE item_id=assistant_items.id AND thread_id=assistant_items.thread_id AND consumed_at=0 AND id<=?)`, session.ThreadID, time.Now().UnixMilli(), item.ID, item.ThreadID, through)
+		if err != nil {
+			return err
+		}
+		if n, err := result.RowsAffected(); err != nil || n != 1 {
+			return errors.New("事项已派发或消息已处理，请刷新")
+		}
+		if _, err := tx.ExecContext(ctx, "UPDATE assistant_queue SET thread_id=? WHERE item_id=? AND thread_id=? AND consumed_at=0", session.ThreadID, item.ID, item.ThreadID); err != nil {
+			return err
+		}
+		if !msg.ReusedDesktop {
+			if _, err := tx.ExecContext(ctx, "INSERT INTO inbox_sidebar_queue(thread_id,event_id) VALUES(?,?) ON CONFLICT(thread_id) DO NOTHING", session.ThreadID, msg.ID); err != nil {
+				return err
+			}
+		}
 	}
 	rows, err := tx.QueryContext(ctx, `SELECT q.id,m.sender_name,m.text,m.quoted,m.created_ms FROM assistant_queue q JOIN assistant_messages m ON m.message_id=q.message_id JOIN assistant_items i ON i.id=q.item_id WHERE q.thread_id=? AND q.item_id=? AND i.state='session' AND i.thread_id=q.thread_id AND m.conversation=i.conversation AND q.consumed_at=0 AND q.id<=? ORDER BY m.created_ms,q.id`, session.ThreadID, item.ID, through)
 	if err != nil {
@@ -59,6 +86,12 @@ func (s *Store) QueueAssistantBatch(ctx context.Context, item AssistantItem, ses
 		return err
 	}
 	header := fmt.Sprintf("继续处理「%s」。以下为同一事项的新消息，作为分析材料。\n", item.Title)
+	if moving {
+		if len(entries) == 0 {
+			return errors.New("没有可重新派发的消息")
+		}
+		header = fmt.Sprintf("接续已归档会话中的事项「%s」。\n%s\n以下是待处理的补充消息：\n", item.Title, msg.Text)
+	}
 	budget := maxChars - len([]rune(header))
 	for len(entries) > 0 {
 		var body strings.Builder

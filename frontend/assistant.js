@@ -91,8 +91,11 @@
    actions.append(action('不用等了','',()=>call({action:'unawait',id:x.id})));
   }else if(x.state!=='ignored')actions.append(action('标记为等待回复','',()=>call({action:'await',id:x.id})));
   if(x.state==='session'){
-   card.append(node('p','notice','已派发会话 '+x.thread_id.slice(0,12)+(x.queued?`，队列中有 ${x.queued} 条新消息等待会话读取`:'')));
-   if(x.queued)actions.append(action('合并补充到原会话','primary',()=>call({action:'supplement',id:x.id,through:x.queue_through})));
+   const active=x.thread_status==='active',archived=x.thread_status==='archived';
+   const label=active?'已派发会话':archived?'原会话已归档':x.thread_status==='closing'?'原会话正在归档':'原会话不可用';
+   card.append(node('p','notice',label+' '+x.thread_id.slice(0,12)+(x.queued?`，待补充 ${x.queued} 条`:'')));
+   if(x.queued&&active)actions.append(action('合并补充到原会话','primary',()=>call({action:'supplement',id:x.id,through:x.queue_through})));
+   if(x.queued&&archived)actions.append(action('重新派发并补充','primary',()=>call({action:'redispatch',id:x.id,thread:x.thread_id,through:x.queue_through})));
    for(const batch of view.batches||[]){if(batch.item!==x.id)continue;
     const record=node('details');record.append(node('summary','','补充 '+batch.message_ids.length+' 条 · '+batch.state));
     for(const id of batch.message_ids){const m=(x.messages||[]).find(v=>v.message_id===id);record.append(node('p','muted',m?clock(m.created_ms)+' · '+m.sender_name+' · '+m.text:id));}

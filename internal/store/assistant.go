@@ -88,6 +88,7 @@ type AssistantMessage struct {
 }
 
 type AssistantItem struct {
+	ThreadStatus string `json:"thread_status,omitempty"`
 	SentBody     string `json:"sent_body,omitempty"`
 	ReplyReceipt string `json:"reply_receipt,omitempty"`
 	ID           string `json:"id"`
@@ -342,7 +343,7 @@ func (s *Store) DeferAssistantMessages(ids []string) error {
 	return nil
 }
 
-const assistantItemColumns = "id,day,conversation,kind,peer,chat_name,title,category,complex,reason,summary,reply,reply_state,reply_error,state,thread_id,session_error,created_ms,updated_ms,(SELECT count(*) FROM assistant_queue q WHERE q.item_id=assistant_items.id AND q.consumed_at=0),(SELECT coalesce(max(q.id),0) FROM assistant_queue q WHERE q.item_id=assistant_items.id AND q.consumed_at=0),awaiting,awaiting_since,awaiting_who,reply_receipt,sent_body"
+const assistantItemColumns = "id,day,conversation,kind,peer,chat_name,title,category,complex,reason,summary,reply,reply_state,reply_error,state,thread_id,session_error,created_ms,updated_ms,(SELECT count(*) FROM assistant_queue q WHERE q.item_id=assistant_items.id AND q.consumed_at=0),(SELECT coalesce(max(q.id),0) FROM assistant_queue q WHERE q.item_id=assistant_items.id AND q.consumed_at=0),awaiting,awaiting_since,awaiting_who,reply_receipt,sent_body,coalesce((select status from sessions where sessions.thread_id=assistant_items.thread_id),'')"
 
 // 等待回复的事项跨天保留，最多回看 7 天。
 const assistantAwaitWindowMs = 7 * 24 * 3600 * 1000
@@ -350,7 +351,7 @@ const assistantAwaitWindowMs = 7 * 24 * 3600 * 1000
 func scanAssistantItem(row interface{ Scan(...any) error }) (AssistantItem, error) {
 	var x AssistantItem
 	var complex, awaiting int
-	err := row.Scan(&x.ID, &x.Day, &x.Conversation, &x.Kind, &x.Peer, &x.ChatName, &x.Title, &x.Category, &complex, &x.Reason, &x.Summary, &x.Reply, &x.ReplyState, &x.ReplyError, &x.State, &x.ThreadID, &x.SessionError, &x.CreatedMs, &x.UpdatedMs, &x.Queued, &x.QueueThrough, &awaiting, &x.AwaitingSince, &x.AwaitingWho, &x.ReplyReceipt, &x.SentBody)
+	err := row.Scan(&x.ID, &x.Day, &x.Conversation, &x.Kind, &x.Peer, &x.ChatName, &x.Title, &x.Category, &complex, &x.Reason, &x.Summary, &x.Reply, &x.ReplyState, &x.ReplyError, &x.State, &x.ThreadID, &x.SessionError, &x.CreatedMs, &x.UpdatedMs, &x.Queued, &x.QueueThrough, &awaiting, &x.AwaitingSince, &x.AwaitingWho, &x.ReplyReceipt, &x.SentBody, &x.ThreadStatus)
 	x.Complex, x.Awaiting = complex != 0, awaiting != 0
 	return x, err
 }
@@ -446,7 +447,7 @@ func (s *Store) ApplyAssistantTriage(assign []AssistantAssignment, resolved []st
 				return err
 			}
 			if a.Queue && x.ThreadID != "" {
-				if _, err = tx.Exec("INSERT INTO assistant_queue(thread_id,item_id,message_id,created_at) VALUES(?,?,?,?) ON CONFLICT(thread_id,message_id) DO NOTHING", x.ThreadID, x.ID, id, time.Now().Unix()); err != nil {
+				if _, err = tx.Exec("INSERT INTO assistant_queue(thread_id,item_id,message_id,created_at) SELECT thread_id,id,?,? FROM assistant_items WHERE id=? AND state='session' AND thread_id<>'' ON CONFLICT(thread_id,message_id) DO NOTHING", id, time.Now().Unix(), x.ID); err != nil {
 					return err
 				}
 			}
