@@ -63,7 +63,12 @@ func (b *Bridge) importCodexThreads(ctx context.Context) {
 			filtered++
 			continue
 		}
-		if _, err := b.store.ByThread(thread.ID); err == nil {
+		if primary, err := b.store.ByThread(thread.ID); err == nil {
+			if primary.Address.Channel == "dingtalk_personal" && primary.Status == "active" && cc.Type == "feishu" && cc.AutoCreateChat {
+				if err := b.ensureFeishuMirror(ctx, adapter, thread); err != nil {
+					b.log.Warn("创建飞书同步群失败", "thread", thread.ID, "error", diagnostics.Error(err))
+				}
+			}
 			bound++
 			continue
 		} else if !errors.Is(err, sql.ErrNoRows) {

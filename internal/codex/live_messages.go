@@ -17,6 +17,7 @@ import (
 )
 
 type LiveMessage struct {
+	Timestamp string
 	HistoryMessage
 	Offset int64
 	Issue  *LiveReadIssue
@@ -281,8 +282,9 @@ func (c *Client) readLiveMessages(ctx context.Context, thread, path string, offs
 		next += int64(len(raw))
 		tail = appendCheckpointTail(tail, raw)
 		var rec struct {
-			Type    string          `json:"type"`
-			Payload json.RawMessage `json:"payload"`
+			Timestamp string
+			Type      string          `json:"type"`
+			Payload   json.RawMessage `json:"payload"`
 		}
 		if json.Unmarshal(raw, &rec) != nil {
 			out = append(out, liveIssue("invalid_json", raw, start))
@@ -318,7 +320,7 @@ func (c *Client) readLiveMessages(ctx context.Context, thread, path string, offs
 			continue
 		}
 		if visible {
-			out = append(out, LiveMessage{HistoryMessage: message, Offset: start})
+			out = append(out, LiveMessage{HistoryMessage: message, Timestamp: rec.Timestamp, Offset: start})
 		}
 	}
 	currentTail, err := readCheckpointTail(f, next)

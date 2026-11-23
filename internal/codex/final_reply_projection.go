@@ -50,8 +50,9 @@ func finalRepliesAtCompletion(ctx context.Context, file *os.File, header, end in
 		offset := position
 		position += int64(len(raw))
 		var record struct {
-			Type    string          `json:"type"`
-			Payload json.RawMessage `json:"payload"`
+			Timestamp string
+			Type      string          `json:"type"`
+			Payload   json.RawMessage `json:"payload"`
 		}
 		if json.Unmarshal(raw, &record) != nil {
 			return nil, errors.New("最终回复核验范围包含无效记录")
@@ -104,7 +105,7 @@ func finalRepliesAtCompletion(ctx context.Context, file *os.File, header, end in
 		if current == turn && item.Phase == "final_answer" {
 			if text, ok := exactReplyText(item.Content); ok && item.ID != "" && last != "" && text == last {
 				matchingFinalCount++
-				completionCandidate = &LiveMessage{HistoryMessage: HistoryMessage{ID: item.ID, Role: "assistant", Text: text}, Offset: offset}
+				completionCandidate = &LiveMessage{HistoryMessage: HistoryMessage{ID: item.ID, Role: "assistant", Text: text}, Offset: offset, Timestamp: record.Timestamp}
 			}
 		}
 		actual := item.Meta.TurnID
@@ -128,7 +129,7 @@ func finalRepliesAtCompletion(ctx context.Context, file *os.File, header, end in
 			return nil, errors.New("最终回复条目标识重复，未擅自合并")
 		}
 		ids[item.ID] = true
-		message := LiveMessage{HistoryMessage: HistoryMessage{ID: item.ID, Role: "assistant", Text: text}, Offset: offset}
+		message := LiveMessage{HistoryMessage: HistoryMessage{ID: item.ID, Role: "assistant", Text: text}, Offset: offset, Timestamp: record.Timestamp}
 		if item.Phase == "final_answer" {
 			finals = append(finals, message)
 		} else if last != "" && text == last {

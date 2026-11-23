@@ -126,6 +126,10 @@ func (b *Bridge) Start(parent context.Context) error {
 	go func() { defer wg.Done(); b.syncPresentations(ctx) }()
 	wg.Add(1)
 	go func() { defer wg.Done(); b.syncLiveMessages(ctx) }()
+	if b.cfg.Watch.Enabled {
+		wg.Add(1)
+		go func() { defer wg.Done(); b.syncFeishuMirrors(ctx) }()
+	}
 	wg.Add(1)
 	go func() { defer wg.Done(); b.watchImageDrafts(ctx) }()
 	wg.Add(1)
@@ -197,6 +201,16 @@ func (b *Bridge) receiveMessage(ctx context.Context, msg im.Message) error {
 	}
 	if !b.messageAllowed(adapter, msg) {
 		return nil
+	}
+	if msg.Address.Channel == "feishu" {
+		mirror, err := b.store.FeishuMirrorAddress(msg.Address)
+		if err != nil {
+			return err
+		}
+		if mirror {
+			_, err = adapter.SendText(ctx, msg.Address, "这是 Codex 会话的飞书同步群，请在对应的 Codex 会话中继续处理。", msg.ID+":mirror")
+			return err
+		}
 	}
 	target, retired, err := b.store.RetiredTarget(msg.Address)
 	if err != nil {
