@@ -113,6 +113,16 @@ func (b *Bridge) syncFeishuMirror(ctx context.Context, m store.FeishuMirror) err
 				if when.UnixMilli() < m.Since {
 					continue
 				}
+				if msg.Role == "user" {
+					original, _ := codex.DesktopInputForms(msg.Text)
+					echo, err := b.store.IsFeishuInputEcho(m, msg.ID, path, store.Hash(original), msg.Offset)
+					if err != nil {
+						return err
+					}
+					if echo {
+						continue
+					}
+				}
 				if err = b.sendFeishuMirrorEntry(ctx, m, msg); err != nil {
 					return err
 				}

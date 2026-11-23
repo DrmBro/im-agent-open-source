@@ -203,12 +203,19 @@ func (b *Bridge) receiveMessage(ctx context.Context, msg im.Message) error {
 		return nil
 	}
 	if msg.Address.Channel == "feishu" {
-		mirror, err := b.store.FeishuMirrorAddress(msg.Address)
-		if err != nil {
-			return err
+		mirror, err := b.store.FeishuInputSession(msg.Address)
+		if err == nil {
+			if mirror.Status != "active" {
+				_, err = adapter.SendText(ctx, msg.Address, "原 Codex 会话已关闭。", msg.ID+":closed")
+				return err
+			}
+			if len([]rune(msg.Text)) > b.cfg.Limits.MaxInputChars {
+				_, err = adapter.SendText(ctx, msg.Address, "消息超出输入上限，请拆分后再发。", msg.ID+":limit")
+				return err
+			}
+			return b.store.QueueFeishuInput(mirror, msg)
 		}
-		if mirror {
-			_, err = adapter.SendText(ctx, msg.Address, "这是 Codex 会话的飞书同步群，请在对应的 Codex 会话中继续处理。", msg.ID+":mirror")
+		if !errors.Is(err, sql.ErrNoRows) {
 			return err
 		}
 	}

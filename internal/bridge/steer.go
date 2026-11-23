@@ -2,6 +2,8 @@ package bridge
 
 import (
 	"context"
+	"database/sql"
+	"errors"
 	"im-agent/internal/codex"
 	"im-agent/internal/store"
 	"time"
@@ -12,10 +14,17 @@ func (b *Bridge) scheduleInbound(item store.QueuedInbound) error {
 	if item.Message.Address.Channel != "feishu" || b.controlJobs == nil {
 		return b.scheduleNormalInbound(item)
 	}
+	mirror, err := b.store.FeishuInputSession(item.Message.Address)
+	if err == nil {
+		return b.scheduleFeishuInput(mirror, item)
+	}
+	if !errors.Is(err, sql.ErrNoRows) {
+		return err
+	}
 	if _, busy := b.steerScheduled.LoadOrStore(item.EventID, true); busy {
 		return nil
 	}
-	err := b.controlJobs.Push("steer:"+item.ThreadID, func(parent context.Context) {
+	err = b.controlJobs.Push("steer:"+item.ThreadID, func(parent context.Context) {
 		defer b.steerScheduled.Delete(item.EventID)
 		ctx, cancel := context.WithTimeout(parent, 30*time.Second)
 		defer cancel()

@@ -26,6 +26,20 @@ func (b *Bridge) syncInboundHistory(ctx context.Context) {
 			failed++
 			b.log.Warn("读取历史收件对账会话失败")
 		}
+		if b.cfg.Watch.Enabled {
+			mirrors, e := b.store.ActiveFeishuMirrors(b.cfg.Watch.ConnectionID)
+			if e != nil {
+				failed++
+			}
+			for _, m := range mirrors {
+				session, e := b.store.FeishuInputSession(m.Address)
+				if e == nil {
+					sessions = append(sessions, session)
+				} else {
+					failed++
+				}
+			}
+		}
 		for _, s := range sessions {
 			if ctx.Err() != nil {
 				return
@@ -122,7 +136,13 @@ func (b *Bridge) reconcileInboundHistory(ctx context.Context, s store.Session, a
 		if e != nil {
 			return recovered, e
 		}
-		if current.Status != "active" || current.Address.Key() != s.Address.Key() {
+		if current.Address.Key() != s.Address.Key() && s.Address.Channel == "feishu" {
+			current, e = b.store.FeishuInputSession(s.Address)
+			if e != nil {
+				return recovered, e
+			}
+		}
+		if current.ThreadID != s.ThreadID || current.Status != "active" || current.Address.Key() != s.Address.Key() {
 			return recovered, errors.New("历史收件过程中会话绑定改变，未跨群提交")
 		}
 		handled, e := b.store.InboundHistoryHandled(s.ThreadID, record.ID)

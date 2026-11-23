@@ -269,6 +269,8 @@ func (c *Client) ForkThread(ctx context.Context, cfg config.Config, id, lastTurn
 }
 
 type TurnHooks struct {
+	// 日志同步器已经负责输出时，返回真实轮次 ID，不替换已有桌面观察。
+	ExternalObserver    bool
 	AllowSteer          bool
 	Model, Effort       string
 	RequestID           string

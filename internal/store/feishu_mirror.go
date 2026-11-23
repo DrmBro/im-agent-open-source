@@ -29,10 +29,62 @@ func (s *Store) FeishuMirror(thread, connection string) (FeishuMirror, error) {
 	err := s.db.QueryRow("SELECT chat,topic,root,since_ms FROM feishu_mirrors WHERE thread=? AND connection=?", thread, connection).Scan(&m.Address.ChatID, &m.Address.TopicID, &m.Address.RootMessageID, &m.Since)
 	return m, err
 }
-func (s *Store) FeishuMirrorAddress(a im.Address) (bool, error) {
-	var found bool
-	err := s.db.QueryRow("SELECT EXISTS(SELECT 1 FROM feishu_mirrors WHERE connection=? AND chat=? AND topic=?)", a.Connection, a.ChatID, a.TopicID).Scan(&found)
-	return found, err
+
+// 反查飞书入口时保留其发送者和群地址；钉钉主绑定只提供会话身份、工作目录与状态。
+func (s *Store) FeishuInputSession(a im.Address) (Session, error) {
+	var v Session
+	if a.Channel != "feishu" {
+		return v, sql.ErrNoRows
+	}
+	err := s.db.QueryRow(`SELECT s.thread_id,s.work_dir,s.status,max(s.created_at,m.since_ms/1000) FROM feishu_mirrors m JOIN sessions s ON s.thread_id=m.thread
+	WHERE m.connection=? AND m.chat=? AND m.topic=?`, a.Connection, a.ChatID, a.TopicID).Scan(&v.ThreadID, &v.WorkDir, &v.Status, &v.CreatedAt)
+	v.Address = a
+	return v, err
+}
+
+// 与长连接和分页补收共用同一个平台 ID。领取和绑定会话一次提交。
+func (s *Store) QueueFeishuInput(v Session, msg im.Message) error {
+	tx, err := s.db.Begin()
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+	claimed, err := claimInboundTx(tx, msg)
+	if err != nil || !claimed {
+		return err
+	}
+	if err = queueInboundTx(tx, v, msg, msg.Address, nil); err != nil {
+		return err
+	}
+	return tx.Commit()
+}
+func (s *Store) FinishFeishuInput(event, stage, status, detail string) error {
+	_, err := s.db.Exec("UPDATE events SET status=?,stage=?,error_summary=?,updated_at=unixepoch() WHERE id=? AND status='processing'", status, stage, detail, event)
+	return err
+}
+
+// 原群已有用户输入，只关联已提交后出现的唯一同文条目；回复仍正常同步。
+func (s *Store) IsFeishuInputEcho(m FeishuMirror, item, path, hash string, offset int64) (bool, error) {
+	tx, err := s.db.Begin()
+	if err != nil {
+		return false, err
+	}
+	defer tx.Rollback()
+	const scope = `thread_id=? AND path=? AND EXISTS(SELECT 1 FROM inbound_messages i WHERE i.event_id=live_mirror_origins.event_id AND i.address_key=?)`
+	args := []any{m.Thread, path, Hash(m.Address.Key())}
+	var n int
+	if err = tx.QueryRow("SELECT count(*) FROM live_mirror_origins WHERE "+scope+" AND state='matched' AND user_item_id=?", append(args, item)...).Scan(&n); err != nil || n > 0 {
+		return n > 0, err
+	}
+	const pending = " AND state='pending' AND min_offset<=? AND (original_hash=? OR rendered_hash=?)"
+	args = append(args, offset, hash, hash)
+	if err = tx.QueryRow("SELECT count(*) FROM live_mirror_origins WHERE "+scope+pending, args...).Scan(&n); err != nil || n != 1 {
+		return false, err
+	}
+	if _, err = tx.Exec("UPDATE live_mirror_origins SET state='matched',user_item_id=? WHERE "+scope+pending, append([]any{item}, args...)...); err != nil {
+		return false, err
+	}
+	return true, tx.Commit()
 }
 func (s *Store) SaveFeishuMirror(thread string, a im.Address, since int64) error {
 	_, err := s.db.Exec("INSERT INTO feishu_mirrors(thread,connection,chat,topic,root,since_ms) VALUES(?,?,?,?,?,?)", thread, a.Connection, a.ChatID, a.TopicID, a.RootMessageID, since)

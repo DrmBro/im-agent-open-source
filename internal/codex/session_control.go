@@ -202,7 +202,7 @@ func (c *Client) selectedModelTurn(ctx context.Context, thread, text string, hoo
 	if response.Turn.ID == "" {
 		return "", &SessionControlUnconfirmed{}
 	}
-	if !c.desktopMode() {
+	if !c.desktopMode() || hooks.ExternalObserver {
 		return response.Turn.ID, nil
 	}
 	watchID := "desktop-" + storeHash(thread + response.Turn.ID + time.Now().String())[:16]

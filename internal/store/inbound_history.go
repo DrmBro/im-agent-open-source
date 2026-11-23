@@ -55,7 +55,7 @@ func (s *Store) InboundHistoryCursor(session Session) (InboundHistoryCursor, err
 	}
 	key := Hash(session.Address.Key())
 	_, err = s.db.Exec(`INSERT INTO inbound_history_cursors(thread_id,address_key,baseline_ms,through_ms)
-SELECT ?,?,?,? WHERE EXISTS (SELECT 1 FROM sessions WHERE thread_id=? AND status='active' AND managed_chat=1)
+SELECT ?,?,?,? WHERE EXISTS (SELECT 1 FROM sessions WHERE thread_id=? AND status='active' AND (managed_chat=1 OR EXISTS(SELECT 1 FROM feishu_mirrors m WHERE m.thread=sessions.thread_id)))
 ON CONFLICT(thread_id) DO NOTHING`, session.ThreadID, key, start, start, session.ThreadID)
 	if err != nil {
 		return v, err
@@ -91,7 +91,7 @@ ORDER BY b.created_ms,b.event_id`, v.ThreadID, v.AddressKey)
 func (s *Store) SaveInboundHistoryWindow(old, next InboundHistoryCursor) error {
 	result, err := s.db.Exec(`UPDATE inbound_history_cursors SET through_ms=?,from_ms=?,to_ms=?,page_token=?,checked_at=?,error=''
 WHERE thread_id=? AND address_key=? AND baseline_ms=? AND through_ms=? AND from_ms=? AND to_ms=? AND page_token=?
-  AND EXISTS (SELECT 1 FROM sessions WHERE thread_id=? AND status='active' AND managed_chat=1)`,
+  AND EXISTS (SELECT 1 FROM sessions WHERE thread_id=? AND status='active' AND (managed_chat=1 OR EXISTS(SELECT 1 FROM feishu_mirrors m WHERE m.thread=sessions.thread_id)))`,
 		next.ThroughMS, next.FromMS, next.ToMS, next.Token, time.Now().Unix(), old.ThreadID, old.AddressKey, old.BaselineMS, old.ThroughMS, old.FromMS, old.ToMS, old.Token, old.ThreadID)
 	if err != nil {
 		return err
