@@ -296,20 +296,11 @@ func assistantPrompt(settings store.AssistantSettings, feedback []store.Assistan
 
 func (b *Bridge) assistantModel(settings store.AssistantSettings) (func(context.Context, string, string) (string, error), error) {
 	provider, err := llm.Resolve(b.cfg.Codex.Home)
-	if err == nil {
-		return func(ctx context.Context, system, user string) (string, error) {
-			return provider.Complete(ctx, settings.Model, system, user)
-		}, nil
-	}
-	// 供应商不可直接调用（如 ChatGPT 登录）时回退到临时 Codex 线程。
-	cfg := b.cfg
-	if settings.Model != "" {
-		cfg.Codex.InboxModel = settings.Model
+	if err != nil {
+		return nil, err
 	}
 	return func(ctx context.Context, system, user string) (string, error) {
-		c := cfg
-		c.Codex.AssistantInstructions = system
-		return codex.ClassifyPersonal(ctx, c, user)
+		return provider.Complete(ctx, settings.Model, system, user)
 	}, nil
 }
 
