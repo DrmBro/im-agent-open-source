@@ -17,6 +17,7 @@ import (
 )
 
 type Client struct {
+	recallLedger          im.RecallLedger
 	directoryActivity     sync.Map
 	directoryScheduled    sync.Map
 	directoryIndexMu      sync.Mutex
@@ -131,6 +132,9 @@ func (c *Client) SendText(ctx context.Context, a im.Address, text, key string) (
 	return c.sendPersonal(ctx, a, text, key, "--text")
 }
 func (c *Client) sendPersonal(ctx context.Context, a im.Address, text, key, bodyFlag string, workDir ...string) (string, error) {
+	return c.sendPersonalBody(ctx, a, text, key, bodyFlag, nil, workDir...)
+}
+func (c *Client) sendPersonalBody(ctx context.Context, a im.Address, text, key, bodyFlag string, quote *im.GroupQuote, workDir ...string) (string, error) {
 	var addressErr error
 	a, addressErr = a.DeliveryAddress()
 	if addressErr != nil {
@@ -167,6 +171,10 @@ func (c *Client) sendPersonal(ctx context.Context, a im.Address, text, key, body
 	}
 	idempotency := store.Hash(channel + "\x00" + c.profile + "\x00" + a.Key() + "\x00" + key)
 	args := append([]string{"chat", "+messages-send", "--identity", "user"}, target...)
+	if quote != nil && !quote.Recalled {
+		args = []string{"chat", "+messages-reply", "--as", "user", "--group", group, "--message-id", quote.MessageID}
+		bodyFlag = "--content"
+	}
 	args = append(args, bodyFlag, "-", "--body-stdin", "--ai-tag=true", "--idempotency-key", idempotency, "--wait-delivery", "--yes")
 	var raw []byte
 	var err error
@@ -188,11 +196,18 @@ func (c *Client) sendPersonal(ctx context.Context, a im.Address, text, key, body
 	}
 	var receipt struct {
 		MessageID      string `json:"openMessageId"`
+		ReplyID        string `json:"messageId"`
 		Delivery       string `json:"deliveryStatus"`
 		Key            string `json:"idempotencyKey"`
 		ConversationID string `json:"conversationId"`
 	}
-	if json.Unmarshal(raw, &receipt) != nil || receipt.MessageID == "" || receipt.Key != idempotency || receipt.Delivery != "delivered" || (group != "" && receipt.ConversationID != group) {
+	if err := json.Unmarshal(raw, &receipt); err != nil {
+		return "", &im.DeliveryUncertain{Cause: err}
+	}
+	if receipt.MessageID == "" && quote != nil && !quote.Recalled {
+		receipt.MessageID = receipt.ReplyID
+	}
+	if receipt.MessageID == "" || receipt.Key != idempotency || receipt.Delivery != "delivered" || (group != "" && receipt.ConversationID != group) {
 		return "", &im.DeliveryUncertain{Cause: errors.New("DWS 未返回确定的消息投递回执")}
 	}
 	return receipt.MessageID, nil

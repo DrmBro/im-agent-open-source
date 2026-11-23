@@ -28,6 +28,7 @@ type AssistantRequest struct {
 }
 
 type AssistantResponse struct {
+	Quote    *im.GroupQuote           `json:"quote,omitempty"`
 	Text     string                   `json:"text,omitempty"`
 	View     *store.AssistantView     `json:"view,omitempty"`
 	People   []im.Person              `json:"people,omitempty"`
@@ -41,6 +42,18 @@ func (b *Bridge) Assistant(ctx context.Context, r AssistantRequest) (AssistantRe
 	var out AssistantResponse
 	var err error
 	switch r.Action {
+	case "group_quote":
+		wire, mid, err := b.store.GroupQuoteSource(r.Thread, r.ID)
+		if err != nil {
+			return out, err
+		}
+		a, ok := b.channels[wire.Connection].(im.GroupQuoteAdapter)
+		if !ok {
+			return out, errors.New("原连接不支持群引用")
+		}
+		q, err := a.CheckGroupQuote(ctx, wire, mid)
+		out.Quote = &q
+		return out, err
 	case "view":
 		v, err := b.assistantView()
 		out.View = &v

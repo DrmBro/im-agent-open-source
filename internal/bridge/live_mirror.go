@@ -275,7 +275,22 @@ func (b *Bridge) flushLive(ctx context.Context, s store.Session) error {
 		}
 		var id string
 		var sendErr error
-		if markdown, ok := adapter.(im.MarkdownAdapter); ok && part.Role == "assistant" {
+		if quoted, ok := adapter.(im.GroupQuoteAdapter); ok && !personalDirect(s.Address) {
+			event, e := b.store.GroupQuoteEvent(s.ThreadID, part.ItemID)
+			sendErr = e
+			if e == nil {
+				wire, mid, e := b.store.GroupQuoteSource(s.ThreadID, event)
+				target, targetErr := s.Address.DeliveryAddress()
+				switch {
+				case e != nil:
+					sendErr = e
+				case targetErr != nil || wire.Key() != target.Key():
+					sendErr = diagnostics.UserError("原消息与待发送群不匹配")
+				default:
+					id, sendErr = quoted.SendGroupReply(ctx, s.Address, part.Body, key, mid)
+				}
+			}
+		} else if markdown, ok := adapter.(im.MarkdownAdapter); ok && part.Role == "assistant" {
 			id, sendErr = markdown.SendMarkdown(ctx, s.Address, part.Body, key)
 		} else {
 			id, sendErr = adapter.SendText(ctx, s.Address, part.Body, key)

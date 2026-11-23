@@ -109,6 +109,9 @@ func (b *Bridge) Start(parent context.Context) error {
 		cliDone = b.cli.Done()
 	}
 	for _, adapter := range b.channels {
+		if recalls, ok := adapter.(interface{ SetRecallLedger(im.RecallLedger) }); ok {
+			recalls.SetRecallLedger(b.store)
+		}
 		if lifecycle, ok := adapter.(im.LifecycleAdapter); ok {
 			lifecycle.SetClosedHandler(b.conversationClosed)
 		}

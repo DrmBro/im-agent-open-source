@@ -142,6 +142,7 @@ type AssistantFeedback struct {
 
 func (s *Store) migrateAssistant() error {
 	_, err := s.db.Exec(`CREATE TABLE IF NOT EXISTS assistant_settings(id INTEGER PRIMARY KEY CHECK(id=1), body TEXT NOT NULL, updated_at INTEGER NOT NULL);
+CREATE TABLE IF NOT EXISTS group_recalled_messages(wire_key TEXT NOT NULL,message_id TEXT NOT NULL,PRIMARY KEY(wire_key,message_id));
 CREATE TABLE IF NOT EXISTS assistant_cursors(conversation TEXT PRIMARY KEY, kind TEXT NOT NULL, peer TEXT NOT NULL DEFAULT '', name TEXT NOT NULL DEFAULT '', since_ms INTEGER NOT NULL, pulled_at INTEGER NOT NULL DEFAULT 0, error TEXT NOT NULL DEFAULT '');
 CREATE TABLE IF NOT EXISTS assistant_messages(message_id TEXT PRIMARY KEY, conversation TEXT NOT NULL, kind TEXT NOT NULL, peer TEXT NOT NULL DEFAULT '', chat_name TEXT NOT NULL, sender_id TEXT NOT NULL, sender_name TEXT NOT NULL, text TEXT NOT NULL, quoted TEXT NOT NULL DEFAULT '', created_ms INTEGER NOT NULL, self INTEGER NOT NULL, robot INTEGER NOT NULL, item_id TEXT NOT NULL DEFAULT '', attempts INTEGER NOT NULL DEFAULT 0, retry_at INTEGER NOT NULL DEFAULT 0);
 CREATE INDEX IF NOT EXISTS assistant_messages_pending ON assistant_messages(item_id, conversation, created_ms);

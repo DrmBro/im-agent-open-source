@@ -61,6 +61,10 @@ func (c *Client) Start(ctx context.Context, receive func(context.Context, im.Mes
 		}
 	}
 	var wg sync.WaitGroup
+	if c.recallLedger != nil {
+		wg.Add(1)
+		go func() { defer wg.Done(); c.watchQuoteRecalls(ctx) }()
+	}
 	for _, sub := range subscriptions {
 		sub := sub
 		wg.Add(1)
@@ -140,6 +144,9 @@ func (c *Client) listen(parent context.Context, sub subscription, total int, rec
 		return err
 	}
 	cmd.Stderr = &readyWriter{onReady: func() {
+		if sub.event == recallEvent {
+			return
+		}
 		if sub.event == groupEvent {
 			c.groupReady(sub.group, true)
 		} else {
@@ -167,6 +174,18 @@ func (c *Client) listen(parent context.Context, sub subscription, total int, rec
 		if json.Unmarshal(scan.Bytes(), &event) != nil {
 			cancel()
 			break
+		}
+		if sub.event == recallEvent {
+			if event.Type == recallEvent && event.ConversationID == sub.group && validID(event.MessageID) {
+				wire := c.Identity()
+				wire.ChatID = c.accountPrefix() + "group:" + sub.group
+				for c.recallLedger.RememberRecall(ctx, wire, event.MessageID) != nil {
+					if !pause(ctx, time.Second) {
+						break
+					}
+				}
+			}
+			continue
 		}
 		if event.Type != sub.event || (sub.peer != "" && event.Sender != sub.peer) || !validID(event.Sender) || (event.Sender == c.self && sub.event != groupEvent) || event.MessageID == "" || event.ConversationID == "" || strings.TrimSpace(event.Content) == "" {
 			c.mu.Lock()

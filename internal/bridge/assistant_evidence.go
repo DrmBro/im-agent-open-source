@@ -49,6 +49,9 @@ func (b *Bridge) checkAssistantEvidence(ctx context.Context, s store.Session, ev
 		if err != nil {
 			return unavailable
 		}
+		if original.PlatformID == "" {
+			_, original.PlatformID, _ = b.store.GroupQuoteSource(s.ThreadID, event)
+		}
 		original.ID = "assistant-evidence:" + store.Hash(event)
 		original.Address = wire
 		original.ReusedDesktop = b.desktopDispatch(s.ThreadID)

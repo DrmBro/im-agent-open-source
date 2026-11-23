@@ -6,7 +6,8 @@ import sqlite3
 import subprocess
 import sys
 
-from read_context import bound_sources, dws_binary
+from pending_messages import call as assistant_call
+from read_context import dws_binary
 
 
 def run(profile, args, body=None):
@@ -27,11 +28,11 @@ def target(args):
     if args.group:
         if not args.profile or not args.group.startswith('cid'):
             raise ValueError('指定目标需要账号配置名和群 openConversationId')
-        return args.profile, args.group
-    bindings = {(profile, group) for profile, group, _, _, _ in bound_sources(args.event, args.thread)}
-    if len(bindings) != 1 or not next(iter(bindings))[1]:
-        raise ValueError('无法唯一定位任务原群，请指定目标群')
-    return bindings.pop()
+        return args.profile, args.group, None
+    quote = assistant_call({'action':'group_quote', 'id':args.event or '', 'thread':args.thread or ''}).get('quote') or {}
+    if not quote.get('profile') or not quote.get('group') or not quote.get('message_id') or type(quote.get('recalled')) is not bool:
+        raise ValueError('无法确认原群消息和撤回状态')
+    return quote['profile'], quote['group'], quote
 
 
 def mentions(profile, group, names):
@@ -69,15 +70,20 @@ def main():
     body = sys.stdin.read(262145).strip()
     if not body or '<@' in body or len(body.encode()) > 262144:
         raise ValueError('正文不能为空或超过 256 KiB；请通过 --at 指定提醒对象')
-    profile, group = target(args)
+    profile, group, quote = target(args)
     ids = mentions(profile, group, args.at)
     text = ' '.join([*('<@'+uid+'>' for uid in ids), body])
     if len(text.encode()) > 262144:
         raise ValueError('含 @ 提醒的正文超过 256 KiB')
     key_data = [profile, group, sorted(ids), body, args.request_id or args.event or args.thread or '']
+    if quote:
+        key_data.append(quote['message_id'])
     key = hashlib.sha256(json.dumps(key_data,ensure_ascii=False).encode()).hexdigest()
-    flags = ['chat','+messages-send','--identity','user','--group',group,'--text','-','--body-stdin',
-             '--ai-tag=true','--idempotency-key',key,'--wait-delivery']
+    if quote and not quote['recalled']:
+        flags = ['chat','+messages-reply','--as','user','--group',group,'--message-id',quote['message_id'],'--content','-']
+    else:
+        flags = ['chat','+messages-send','--identity','user','--group',group,'--text','-']
+    flags.extend(['--body-stdin','--ai-tag=true','--idempotency-key',key,'--wait-delivery'])
     if ids:
         flags.extend(['--at-open-dingtalk-ids',','.join(ids)])
     try:
@@ -87,9 +93,9 @@ def main():
             raise ValueError(f'投递未确认，请先查原群，勿自动重发。幂等键 {key}') from err
         raise
     if not args.send:
-        print(json.dumps({'status':'preview','group':group,'members':args.at,'mentions':ids,'text':text,'key':key},ensure_ascii=False))
-    elif receipt.get('deliveryStatus')=='delivered' and receipt.get('conversationId')==group and receipt.get('idempotencyKey')==key and receipt.get('openMessageId'):
-        print(json.dumps({'status':'delivered','message_id':receipt['openMessageId'],'group':group,'mentions':ids},ensure_ascii=False))
+        print(json.dumps({'status':'preview','group':group,'members':args.at,'mentions':ids,'quote':quote,'text':text,'key':key},ensure_ascii=False))
+    elif receipt.get('deliveryStatus')=='delivered' and receipt.get('conversationId')==group and receipt.get('idempotencyKey')==key and (receipt.get('openMessageId') or (quote and not quote['recalled'] and receipt.get('messageId'))):
+        print(json.dumps({'status':'delivered','message_id':receipt.get('openMessageId') or receipt['messageId'],'group':group,'mentions':ids},ensure_ascii=False))
     else:
         raise ValueError(f'缺少匹配的送达回执，请核对原群，勿自动重发。幂等键 {key}')
 

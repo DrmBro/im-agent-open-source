@@ -718,7 +718,17 @@ func (b *Bridge) sendAssistantReply(ctx context.Context, src im.AssistantSource,
 	if err != nil {
 		return err
 	}
-	receipt, err := adapter.SendText(ctx, address, text, fmt.Sprintf("personal-reply:assistant:%s:%d", x.ID, version))
+	key := fmt.Sprintf("personal-reply:assistant:%s:%d", x.ID, version)
+	var receipt string
+	if quoted, ok := adapter.(im.GroupQuoteAdapter); ok && x.Kind == "group" {
+		var mid string
+		mid, err = b.store.AssistantReplySource(x.ID, x.Conversation)
+		if err == nil {
+			receipt, err = quoted.SendGroupReply(ctx, address, text, key, mid)
+		}
+	} else {
+		receipt, err = adapter.SendText(ctx, address, text, key)
+	}
 	switch {
 	case err == nil:
 		// 催办发出后重新开始等待；普通回复是否在等答复，由下一轮拉到的本人消息判断。
