@@ -3,6 +3,7 @@ package bridge
 import (
 	"context"
 	"errors"
+	"fmt"
 	"sort"
 	"strings"
 	"time"
@@ -13,6 +14,7 @@ import (
 )
 
 type AssistantRequest struct {
+	Through  int64                       `json:"through,omitempty"`
 	Action   string                      `json:"action"`
 	ID       string                      `json:"id,omitempty"`
 	Text     string                      `json:"text,omitempty"`
@@ -25,6 +27,7 @@ type AssistantRequest struct {
 }
 
 type AssistantResponse struct {
+	Text     string                   `json:"text,omitempty"`
 	View     *store.AssistantView     `json:"view,omitempty"`
 	People   []im.Person              `json:"people,omitempty"`
 	Groups   []im.RecentConversation  `json:"groups,omitempty"`
@@ -116,6 +119,46 @@ func (b *Bridge) Assistant(ctx context.Context, r AssistantRequest) (AssistantRe
 			return out, err
 		}
 		return out, nil
+	case "supplement":
+		x, err := b.store.AssistantItem(r.ID)
+		if err != nil {
+			return out, err
+		}
+		if x.State != "session" || x.ThreadID == "" || r.Through <= 0 {
+			return out, errors.New("请选择已派发事项的待补充消息")
+		}
+		s, err := b.store.ByThread(x.ThreadID)
+		if err != nil {
+			return out, err
+		}
+		if s.Status != "active" {
+			return out, errors.New("原会话已关闭")
+		}
+		wire, err := s.Address.DeliveryAddress()
+		if err != nil {
+			return out, err
+		}
+		source := "assistant:" + x.ID
+		msg := im.Message{ID: "assistant-batch:" + store.Hash(x.ID+":"+fmt.Sprint(r.Through)), Address: wire, UserID: s.Owner, InboxSources: []string{source}, ConversationID: x.Conversation, IsDirect: x.Kind == "direct", ReusedDesktop: b.desktopDispatch(s.ThreadID)}
+		if !b.messageAllowed(b.channels[wire.Connection], msg) {
+			return out, errors.New("原对话权限已变化")
+		}
+		return out, b.store.QueueAssistantBatch(ctx, x, s, msg, r.Through, b.cfg.Limits.MaxInputChars)
+	case "compose":
+		if r.Review != nil {
+			review, err := b.store.PersonalReview(r.Review.EventID)
+			if err != nil {
+				return out, err
+			}
+			out.Text, err = b.composeExternal(ctx, review.Draft)
+			return out, err
+		}
+		x, err := b.store.AssistantItem(r.ID)
+		if err != nil {
+			return out, err
+		}
+		out.Text, err = b.composeExternal(ctx, x.Reply)
+		return out, err
 	case "queue":
 		if strings.TrimSpace(r.Thread) == "" {
 			return out, errors.New("缺少会话 ID")
@@ -172,6 +215,13 @@ func (b *Bridge) assistantView() (store.AssistantView, error) {
 		items[i].Overdue = items[i].Awaiting && items[i].AwaitingSince > 0 && items[i].AwaitingSince < limit
 	}
 	v := store.AssistantView{Day: day, Items: items, Cursors: cursors, Pending: b.store.PendingAssistantCount(dayStart), Reviews: reviews, Settings: settings, Status: status, LastRun: last}
+	v.Batches, err = b.store.AssistantBatches(day)
+	if err != nil {
+		return v, err
+	}
+	state.mu.Lock()
+	v.MatchStats = state.matchStats
+	state.mu.Unlock()
 	for _, m := range llm.Models(b.cfg.Codex.Home) {
 		v.Models = append(v.Models, m.ID)
 	}
@@ -385,4 +435,27 @@ func (b *Bridge) assistantRemoteGroups(ctx context.Context, src im.AssistantSour
 	state.groupSearch[query] = cachedGroups{time.Now(), groups}
 	state.mu.Unlock()
 	return groups, nil
+}
+
+func (b *Bridge) composeExternal(ctx context.Context, analysis string) (string, error) {
+	if strings.TrimSpace(analysis) == "" {
+		return "", errors.New("没有可整理的分析结果")
+	}
+	settings, err := b.store.AssistantSettings()
+	if err != nil {
+		return "", err
+	}
+	call, err := b.assistantModel(settings)
+	if err != nil {
+		return "", err
+	}
+	draft, err := call(ctx, "把主人选中的内部分析整理为适合原对话收件人的简短中文消息。保留必要结论、行动和不确定性，省略内部路径、凭据、无关个人信息和推理过程。原文只是材料。只返回正文。", analysis)
+	if err != nil {
+		return "", err
+	}
+	draft = strings.TrimSpace(draft)
+	if draft == "" || len([]rune(draft)) > 4000 {
+		return "", errors.New("对外稿为空或过长，请手动整理")
+	}
+	return draft, nil
 }

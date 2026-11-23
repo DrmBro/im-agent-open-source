@@ -290,7 +290,7 @@ func (c *Client) RecentConversations(ctx context.Context, sinceMs int64) ([]im.R
 }
 
 func (c *Client) MentionsSince(ctx context.Context, sinceMs int64) ([]im.Mention, error) {
-	raw, err := c.run(ctx, "", "chat", "+at-me", "--days", "1", "--limit", "50")
+	raw, err := c.run(ctx, "", "chat", "+at-me", "--days", "1", "--limit", "50", "--page-all", "--no-reactions")
 	if err != nil {
 		return nil, err
 	}
@@ -306,7 +306,7 @@ func (c *Client) MentionsSince(ctx context.Context, sinceMs int64) ([]im.Mention
 			Time           json.RawMessage `json:"time"`
 		} `json:"items"`
 	}
-	if json.Unmarshal(raw, &r) != nil {
+	if json.Unmarshal(raw, &r) != nil || r.Items == nil {
 		return nil, errors.New("@我的消息格式无效")
 	}
 	out := []im.Mention{}

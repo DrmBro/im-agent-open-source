@@ -32,6 +32,7 @@
   s.append(node('span','dot'+(set.enabled?' on':'')),node('span','',text));
   if(view?.last_run)s.append(node('span','muted','上次运行 '+new Date(view.last_run*1000).toLocaleTimeString()));
   if(view?.pending)s.append(node('span','chip','待分析 '+view.pending+' 条'));
+  if(view.match_stats)s.append(node('span','muted',view.match_stats));
   if(set.model)s.append(node('span','chip accent','模型 '+set.model));
  }
 
@@ -46,6 +47,22 @@
 
  function action(label,cls,fn,confirm){const b=node('button','btn small '+(cls||''),label);b.type='button';b.onclick=()=>task(async()=>{if(confirm&&!await confirmAction(confirm.title,confirm.message,{confirmText:label,danger:confirm.danger}))return;try{await fn();show('');}catch(e){show(e);throw e;}await refresh(true);});return b;}
 
+ // 内部分析始终只读；只有明确选择整理时才生成钉钉正文。
+ function externalDraft(parent,request,send){
+  const editor=node('div','assistant-external');
+  const open=node('button','btn small','整理钉钉回复');open.type='button';
+  open.onclick=()=>task(async()=>{
+   try{
+    const result=await call({...request,action:'compose'});
+    const field=node('textarea','assistant-reply');field.rows=4;field.value=result.text;field.maxLength=4000;
+    field.setAttribute('aria-label','钉钉发送正文');
+    const deliver=action('发送到钉钉','primary',async()=>{await send(field.value);editor.replaceChildren();});
+    const cancel=node('button','btn small','取消');cancel.type='button';cancel.onclick=()=>editor.replaceChildren();
+    editor.replaceChildren(field,deliver,cancel);requestAnimationFrame(()=>field.focus());
+   }catch(e){show(e);}
+  });
+  parent.append(open,editor);
+ }
  function renderItem(x){
   const card=node('article','assistant-item assistant-'+bucket(x));
   const head=node('div','assistant-item-head');
@@ -62,10 +79,10 @@
   card.append(msgs);
   const actions=node('div','assistant-actions');
   if(x.category==='auto_reply'&&x.state!=='session'){
-   const box=node('textarea','assistant-reply');box.rows=3;box.maxLength=4000;box.value=editing?.id===x.id?editing.text:x.reply;box.readOnly=['sending','sent','unknown'].includes(x.reply_state);box.oninput=()=>{editing={id:x.id,text:box.value};};box.setAttribute('aria-label','回复草稿');
-   card.append(box);
-   if(x.reply_state)card.append(node('p',x.reply_state==='sent'?'muted':'notice warning',(replyStates[x.reply_state]||x.reply_state)+(x.reply_error?'：'+x.reply_error:'')));
-   if(!x.reply_state||x.reply_state==='failed')actions.append(action('确认发送','primary',async()=>{await call({action:'reply',id:x.id,text:box.value});editing=null;},{title:'发送这条回复？',message:`将以你的钉钉身份发送到「${x.chat_name}」：\n\n${box.value.slice(0,500)}`}));
+   card.append(node('p','assistant-original',x.reply||''));
+   if(x.reply_state)card.append(node('p',x.reply_state==='sent'?'muted':'notice warning',(replyStates[x.reply_state]||x.reply_state)+(x.reply_error?' · '+x.reply_error:'')+(x.reply_receipt?' · 回执 '+x.reply_receipt:'')));
+   if(x.sent_body)card.append(node('p','assistant-original','对外正文 · '+x.sent_body));
+   if(!x.reply_state||x.reply_state==='failed')externalDraft(card,{id:x.id},text=>call({action:'reply',id:x.id,text}));
    if(x.reply_state==='unknown')actions.append(action('已核对未送达，允许重发','',()=>call({action:'reply_reset',id:x.id}),{title:'确认未送达？',message:'请先到钉钉确认对方没有收到，否则重发可能造成重复。'}));
   }
   if(x.awaiting){
@@ -75,6 +92,12 @@
   }else if(x.state!=='ignored')actions.append(action('标记为等待回复','',()=>call({action:'await',id:x.id})));
   if(x.state==='session'){
    card.append(node('p','notice','已派发会话 '+x.thread_id.slice(0,12)+(x.queued?`，队列中有 ${x.queued} 条新消息等待会话读取`:'')));
+   if(x.queued)actions.append(action('合并补充到原会话','primary',()=>call({action:'supplement',id:x.id,through:x.queue_through})));
+   for(const batch of view.batches||[]){if(batch.item!==x.id)continue;
+    const record=node('details');record.append(node('summary','','补充 '+batch.message_ids.length+' 条 · '+batch.state));
+    for(const id of batch.message_ids){const m=(x.messages||[]).find(v=>v.message_id===id);record.append(node('p','muted',m?clock(m.created_ms)+' · '+m.sender_name+' · '+m.text:id));}
+    card.append(record);
+   }
   }else if(x.state==='open'){
    if(x.session_error)card.append(node('p','notice warning','派发会话失败：'+x.session_error));
    actions.append(action(x.session_error?'重试派发会话':'派发会话处理','',()=>call({action:'session',id:x.id})));
@@ -108,12 +131,18 @@
    const card=node('div','assistant-item');
    card.append(node('p','muted',(r.peer_name||r.peer)+' · '+(r.target?.includes(':group:')?'群聊':'单聊')+' · 会话 '+r.thread_id.slice(0,12)));
    card.append(node('pre','assistant-original',r.input||''));
-   const field=node('textarea','assistant-reply');field.rows=5;field.maxLength=12000;field.value=r.approved_text||r.draft;field.readOnly=r.state!=='pending';card.append(field);
+   card.append(node('p','assistant-original',r.draft||''));
+   if(r.reason)card.append(node('p','muted',r.reason));
+   if(['approved','sending','sent'].includes(r.state)){
+    card.append(node('p','muted',{approved:'已确认，等待发送',sending:'发送中',sent:'已确认送达'}[r.state]),node('p','assistant-original',r.approved_text||''));
+    if(r.receipts)card.append(node('p','muted','回执 '+r.receipts));
+    panel.append(card);continue;
+   }
    if(r.state==='unknown'){card.append(node('p','notice warning','发送结果不确定，请先到钉钉核对；不会自动重发。'));panel.append(card);continue;}
    const actions=node('div','assistant-actions');
-   const review=kind=>call({action:'review',review:{event_id:r.event_id,version:r.version,action:kind,text:field.value}});
-   if(r.can_send)actions.append(action('确认并发送','primary',()=>review('send'),{title:'确认发送？',message:field.value.slice(0,600)}));
-   actions.append(action('保存草稿','',()=>review('save')),action('我已自行回复','',()=>review('manual')),action('忽略','',()=>review('ignored')));
+   const review=(kind,text='')=>call({action:'review',review:{event_id:r.event_id,version:r.version,action:kind,text}});
+   if(r.can_send)externalDraft(card,{review:{event_id:r.event_id}},text=>review('send',text));
+   actions.append(action('我已自行回复','',()=>review('manual')),action('忽略','',()=>review('ignored')));
    card.append(actions);panel.append(card);
   }
   box.append(panel);
@@ -171,8 +200,9 @@
  function render(force){
   if(!view)return;
   renderStatus();
-  const next=JSON.stringify([view.items,view.reviews,view.cursors,filter]);
+  const next=JSON.stringify([view.items,view.reviews,view.batches,view.cursors,filter]);
   if(!force&&next===signature)return;
+  if(!force&&document.querySelector('.assistant-external textarea'))return;
   if(!force&&document.activeElement?.classList?.contains('assistant-reply'))return; // 正在编辑回复时不重绘列表
   signature=next;
   renderStats();renderReviews();renderList();renderCursors();

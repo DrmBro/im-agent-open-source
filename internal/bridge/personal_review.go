@@ -57,7 +57,15 @@ func (b *Bridge) preparePersonalReviews(ctx context.Context, s store.Session) er
 		}
 		var r replyAssessment
 		if candidate.Natural {
-			r = b.reviewNaturalDraft(ctx, s, candidate, autoAfter > 0)
+			if strings.HasPrefix(event, "assistant:") || strings.HasPrefix(event, "assistant-batch:") || strings.HasPrefix(event, "assistant-evidence:") {
+				autoAfter = 0 // 消息助理给主人的内部分析只能由主人主动整理并外发。
+				r = b.reviewNaturalDraft(ctx, s, candidate, false)
+				if reason := b.checkAssistantEvidence(ctx, s, event, candidate); reason != "" {
+					r.Reason = reason
+				}
+			} else {
+				r = b.reviewNaturalDraft(ctx, s, candidate, autoAfter > 0)
+			}
 		} else {
 			r = parseReplyAssessment(candidate.Body)
 		}

@@ -2,6 +2,7 @@ package store
 
 import (
 	"context"
+	"database/sql"
 	"encoding/json"
 	"errors"
 	"time"
@@ -31,15 +32,22 @@ func (s *Store) ClaimInbound(msg im.Message) (bool, error) {
 	if msg.ID == "" || msg.Address.ChatID == "" {
 		return false, errors.New("入站消息身份无效")
 	}
-	payload, err := json.Marshal(msg)
-	if err != nil {
-		return false, err
-	}
 	tx, err := s.db.Begin()
 	if err != nil {
 		return false, err
 	}
 	defer tx.Rollback()
+	claimed, err := claimInboundTx(tx, msg)
+	if err != nil || !claimed {
+		return false, err
+	}
+	return true, tx.Commit()
+}
+func claimInboundTx(tx *sql.Tx, msg im.Message) (bool, error) {
+	payload, err := json.Marshal(msg)
+	if err != nil {
+		return false, err
+	}
 	result, err := tx.Exec("INSERT INTO events(id,status,created_at,chat_key,stage,updated_at) VALUES (?,'processing',?,?,'received',?) ON CONFLICT(id) DO NOTHING", msg.ID, time.Now().Unix(), Hash(msg.Address.Key()), time.Now().Unix())
 	if err != nil {
 		return false, err
@@ -51,7 +59,7 @@ func (s *Store) ClaimInbound(msg im.Message) (bool, error) {
 	if _, err = tx.Exec("INSERT INTO inbound_messages(event_id,address_key,payload,created_at) VALUES (?,?,?,?)", msg.ID, Hash(msg.Address.Key()), string(payload), time.Now().Unix()); err != nil {
 		return false, err
 	}
-	return true, tx.Commit()
+	return true, nil
 }
 
 // 队列状态和最终输入同一事务保存；这一阶段没有调用过 Codex 提交接口。
@@ -71,15 +79,21 @@ func (s *Store) queueRoutedInbound(session Session, msg im.Message, inboxIDs []s
 	return s.queueInbound(session, msg, source, inboxIDs)
 }
 func (s *Store) queueInbound(session Session, msg im.Message, source im.Address, inboxIDs []string) error {
-	payload, err := json.Marshal(msg)
-	if err != nil {
-		return err
-	}
 	tx, err := s.db.Begin()
 	if err != nil {
 		return err
 	}
 	defer tx.Rollback()
+	if err = queueInboundTx(tx, session, msg, source, inboxIDs); err != nil {
+		return err
+	}
+	return tx.Commit()
+}
+func queueInboundTx(tx *sql.Tx, session Session, msg im.Message, source im.Address, inboxIDs []string) error {
+	payload, err := json.Marshal(msg)
+	if err != nil {
+		return err
+	}
 	if len(inboxIDs) > 0 {
 		if !msg.ReusedDesktop {
 			if _, err := tx.Exec("INSERT INTO inbox_sidebar_queue(thread_id,event_id) VALUES(?,?) ON CONFLICT(thread_id) DO NOTHING", session.ThreadID, msg.ID); err != nil {
@@ -147,7 +161,7 @@ WHERE id=? AND status='processing' AND stage='received'`, Hash(session.Address.K
 	if err != nil || count != 1 {
 		return errors.New("入站阶段已变化，未排队")
 	}
-	return tx.Commit()
+	return nil
 }
 
 // 启动时只补偿尚未进入任何副作用阶段的收件记录。

@@ -31,12 +31,14 @@ func assistantDay(now time.Time) (string, int64) {
 }
 
 type assistantState struct {
-	mu      sync.Mutex
-	wake    chan struct{}
-	running bool
-	lastRun int64
-	status  string
-	nudged  map[string]int64
+	matchStats string
+	matchCache map[string]matchCacheEntry
+	mu         sync.Mutex
+	wake       chan struct{}
+	running    bool
+	lastRun    int64
+	status     string
+	nudged     map[string]int64
 	// 设置页搜索用的短期缓存
 	people      map[string]cachedPeople
 	groupSearch map[string]cachedGroups
@@ -181,6 +183,9 @@ func (b *Bridge) assistantPull(ctx context.Context, src im.AssistantSource, sett
 			}
 		}
 	}
+	total, failed := 0, 0
+	var mentionSince, mentionLatest int64
+	mentionsOK := false
 	if settings.Mentions {
 		cursorKey := "@mentions"
 		since := b.store.AssistantCursor(cursorKey, dayStart)
@@ -190,12 +195,12 @@ func (b *Bridge) assistantPull(ctx context.Context, src im.AssistantSource, sett
 				add(assistantTarget{"conversation", m.ConversationID, "group", "", m.Name})
 				latest = max(latest, m.CreatedMs)
 			}
-			_ = b.store.SaveAssistantCursor(cursorKey, "mentions", "", "@我的消息", latest, "")
+			mentionSince, mentionLatest, mentionsOK = since, latest, true
 		} else {
+			failed++
 			_ = b.store.SaveAssistantCursor(cursorKey, "mentions", "", "@我的消息", since, diagnostics.Error(err))
 		}
 	}
-	total, failed := 0, 0
 	for _, t := range targets {
 		if ctx.Err() != nil {
 			break
@@ -214,29 +219,50 @@ func (b *Bridge) assistantPull(ctx context.Context, src im.AssistantSource, sett
 			continue
 		}
 		latest := since
-		byConv := map[string][]im.PulledMessage{}
+		var keep []im.PulledMessage
+		conv := ""
+		valid := true
 		for _, m := range msgs {
 			if m.CreatedMs < dayStart {
 				continue
 			}
-			if settings.SkipRobots && m.Robot {
-				latest = max(latest, m.CreatedMs+1)
-				continue
+			if m.ConversationID == "" || (conv != "" && conv != m.ConversationID) || (t.by == "conversation" && m.ConversationID != t.id) {
+				valid = false
+				break
 			}
-			byConv[m.ConversationID] = append(byConv[m.ConversationID], m)
+			conv = m.ConversationID
 			latest = max(latest, m.CreatedMs+1)
-		}
-		for conv, list := range byConv {
-			n, err := b.store.PutAssistantMessages(t.kind, t.peer, t.name, list)
-			if err != nil {
-				failed++
-				continue
+			if !settings.SkipRobots || !m.Robot {
+				keep = append(keep, m)
 			}
-			total += n
+		}
+		if !valid {
+			failed++
+			_ = b.store.SaveAssistantCursor(key, t.kind, t.peer, t.name, since, "消息来源不一致，下轮补拉")
+			continue
+		}
+		if conv != "" {
 			key = conv
 		}
-		_ = b.store.SaveAssistantCursor(key, t.kind, t.peer, t.name, latest, "")
+		n, err := b.store.CommitAssistantPull(key, t.kind, t.peer, t.name, latest, keep)
+		if err != nil {
+			failed++
+			_ = b.store.SaveAssistantCursor(key, t.kind, t.peer, t.name, since, "消息尚未入库，下轮补拉")
+			continue
+		}
+		total += n
 	}
+	if mentionsOK && ctx.Err() == nil {
+		hint := ""
+		if failed > 0 {
+			mentionLatest = mentionSince
+			hint = "部分会话未完成补拉，保留发现位置"
+		}
+		if b.store.SaveAssistantCursor("@mentions", "mentions", "", "@我的消息", mentionLatest, hint) != nil {
+			failed++
+		}
+	}
+
 	return total, failed
 }
 
@@ -678,11 +704,11 @@ func (b *Bridge) sendAssistantReply(ctx context.Context, src im.AssistantSource,
 	if err != nil {
 		return err
 	}
-	_, err = adapter.SendText(ctx, address, text, fmt.Sprintf("personal-reply:assistant:%s:%d", x.ID, version))
+	receipt, err := adapter.SendText(ctx, address, text, fmt.Sprintf("personal-reply:assistant:%s:%d", x.ID, version))
 	switch {
 	case err == nil:
 		// 催办发出后重新开始等待；普通回复是否在等答复，由下一轮拉到的本人消息判断。
-		return b.store.FinishAssistantReply(x.ID, "sent", "", followup)
+		return b.store.FinishAssistantReply(x.ID, "sent", "", followup, receipt)
 	case errors.As(err, new(*im.DeliveryUncertain)):
 		_ = b.store.FinishAssistantReply(x.ID, "unknown", "送达结果不确定，请到钉钉核对，不会自动重发", false)
 		return err

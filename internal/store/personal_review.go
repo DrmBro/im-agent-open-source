@@ -24,6 +24,7 @@ type PersonalReview struct {
 	Draft        string `json:"draft"`
 	State        string `json:"state"`
 	Version      int64  `json:"version"`
+	Receipts     string `json:"receipts,omitempty"`
 	DeliveryItem string `json:"delivery_item"`
 	ApprovedText string `json:"approved_text"`
 	UpdatedAt    int64  `json:"updated_at"`
@@ -38,11 +39,11 @@ type PersonalReviewAction struct {
 	Text    string `json:"text"`
 }
 
-const reviewFields = "event_id,thread_id,peer,input,assessment,reason,draft,state,version,delivery_item,approved_text,updated_at,auto_eligible,approval_kind,EXISTS(SELECT 1 FROM request_results r WHERE r.event_id=personal_reviews.event_id AND r.execution_state='completed' AND r.sealed=1),coalesce((SELECT chat_id FROM sessions WHERE thread_id=personal_reviews.thread_id),''),coalesce((SELECT json_extract(payload,'$.UserName') FROM inbound_messages WHERE event_id=personal_reviews.event_id),'')"
+const reviewFields = "event_id,thread_id,peer,input,assessment,reason,draft,state,version,delivery_item,approved_text,updated_at,auto_eligible,approval_kind,EXISTS(SELECT 1 FROM request_results r WHERE r.event_id=personal_reviews.event_id AND r.execution_state='completed' AND r.sealed=1),coalesce((SELECT chat_id FROM sessions WHERE thread_id=personal_reviews.thread_id),''),coalesce((SELECT json_extract(payload,'$.UserName') FROM inbound_messages WHERE event_id=personal_reviews.event_id),''),coalesce((SELECT group_concat(platform_id,', ') FROM (SELECT platform_id FROM live_mirror_parts p WHERE p.thread_id=personal_reviews.thread_id AND p.item_id=personal_reviews.delivery_item AND p.state='sent' AND p.platform_id<>'' ORDER BY part_index)),'')"
 
 func scanReview(row interface{ Scan(...any) error }) (PersonalReview, error) {
 	var r PersonalReview
-	err := row.Scan(&r.EventID, &r.ThreadID, &r.Peer, &r.Input, &r.Assessment, &r.Reason, &r.Draft, &r.State, &r.Version, &r.DeliveryItem, &r.ApprovedText, &r.UpdatedAt, &r.AutoEligible, &r.ApprovalKind, &r.CanSend, &r.Target, &r.PeerName)
+	err := row.Scan(&r.EventID, &r.ThreadID, &r.Peer, &r.Input, &r.Assessment, &r.Reason, &r.Draft, &r.State, &r.Version, &r.DeliveryItem, &r.ApprovedText, &r.UpdatedAt, &r.AutoEligible, &r.ApprovalKind, &r.CanSend, &r.Target, &r.PeerName, &r.Receipts)
 	return r, err
 }
 func (s *Store) migratePersonalReviews() error {
