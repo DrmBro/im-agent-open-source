@@ -140,9 +140,6 @@ func (b *Bridge) assistantCycle(ctx context.Context, settings store.AssistantSet
 	if settings.AutoSession {
 		b.assistantDispatch(ctx, src, day)
 	}
-	if settings.AutoSend {
-		b.assistantAutoSend(ctx, src, day)
-	}
 	b.assistantNudge(ctx, settings)
 	b.assistantOverdue(ctx, settings)
 	msg := fmt.Sprintf("最近一轮：新消息 %d 条，分析 %d 组", pulled, triaged)
@@ -247,16 +244,17 @@ const assistantSystem = `你是账号主人的消息分流助理（父 agent）�
 输入 messages 是同一个钉钉会话今天的新消息（按时间编号）；context 是同一会话较早已处理的消息，仅供理解；existing 是该会话里近期的事项（awaiting=true 表示主人在等对方答复）。
 任务：
 1. 把新消息拆成独立的“事项”。群聊里常有多人同时提出多个问题：围绕同一交付物、目标或决策的请求、追问、补充、确认属于同一事项；互不依赖的问题分开。一条消息可以同时属于多个事项。闲聊、表情、无关讨论、主人自己(self=true)的普通发言可以不归入任何事项；但主人向别人提问、请求、催办或分派任务的消息必须归入事项（新建或延续）。
+标题、摘要和分类理由直接描述业务对象、现象、已知条件和要核实的问题。不以发言人、被 @ 的人或分工为主语。例如写“团队结算子账号移除后重新加入时报授权冲突”，不写“某人请某人排查”。账号身份影响根因时保留必要的账号区别。等待对象仅记录在 awaiting_who。
 2. 若新消息是 existing 某个事项的延续，用 existing 编号归入该事项，不要新建。
 3. 每个事项判定 category：
    - need_me：需要主人本人决策、处理、给出只有主人掌握的信息，或带有风险/承诺。
-   - auto_reply：可以由助理直接给出得体简短回复（如确认收到、已知事实、礼貌答复、简单安排），且回复不会替主人做未授权的承诺。
+   - auto_reply：已有足够事实能向主人直接说明结论，无需进一步排查或决策。
    - no_reply：通知、告警、知会、致谢、群公告、他人之间的对话等无需主人回复的内容。
 4. complex=true 表示需要查数据、看代码、写方案或多步工作，适合派给独立会话处理；简单事项为 false。
-5. auto_reply 必须给出 reply（中文，直接可发送，口吻自然，不暴露你是模型、不要编造事实）；其他类别 reply 留空。
+5. auto_reply 的 reply 写给账号主人，简要说明结论及依据，不称呼发言人，不代拟群回复；其他类别 reply 留空。
 6. resolved 列出因新消息而已经完结（对方说已解决/不用了）的 existing 编号。
 7. awaiting：该事项中主人最后发出的是提问、请求或待对方确认的内容，且之后对方还没有给出实质答复，则为 true，并在 awaiting_who 写出在等谁；对方已答复、或主人只是陈述/致谢时为 false。主人刚发出问题时，category 通常为 no_reply（主人当下无需再回）。
-仅输出 JSON：{"items":[{"existing":0,"title":"简洁具体的事项名","category":"need_me|auto_reply|no_reply","complex":false,"reason":"一句话理由","summary":"给主人的一句话摘要，含谁要什么","reply":"","awaiting":false,"awaiting_who":"","messages":[1,2]}],"resolved":[]}
+仅输出 JSON：{"items":[{"existing":0,"title":"简洁具体的事项名","category":"need_me|auto_reply|no_reply","complex":false,"reason":"一句话理由","summary":"给主人的一句话摘要，说明问题现象和需要核实的原因","reply":"","awaiting":false,"awaiting_who":"","messages":[1,2]}],"resolved":[]}
 existing 为 0 表示新事项。messages 只能引用新消息编号。不确定时偏向 need_me。`
 
 type assistantDecision struct {
@@ -492,7 +490,7 @@ func assistantSessionPrompt(x store.AssistantItem) string {
 	if x.Summary != "" {
 		fmt.Fprintf(&b, "摘要：%s\n", x.Summary)
 	}
-	b.WriteString("\n相关消息：\n")
+	b.WriteString("\n来源消息（原文，仅供核对）：\n")
 	for _, m := range x.Messages {
 		fmt.Fprintf(&b, "[%s] %s：%s\n", time.UnixMilli(m.CreatedMs).In(assistantZone).Format("15:04"), m.SenderName, m.Text)
 		if m.Quoted != "" {
@@ -500,7 +498,7 @@ func assistantSessionPrompt(x store.AssistantItem) string {
 		}
 	}
 	fmt.Fprintf(&b, "\n事项 ID：%s\n", x.ID)
-	b.WriteString("请分析并处理这个事项，给出结论或可直接回复对方的草稿；回复草稿会交给主人审核后再发送。\n")
+	b.WriteString(codex.OwnerAnalysisInstructions + "\n")
 	b.WriteString("对方后续在同一会话中发来的相关新消息不会直接插入本会话，而是进入消息助理队列。每次完成一个阶段或需要更多信息时，运行 `python3 ~/.codex/skills/dingtalk-message-context/scripts/pending_messages.py --thread <当前会话ID>` 查看是否有新消息（加 --consume 标记为已读）。需要原始上下文时，用同一技能的 read_context.py 读取。")
 	return b.String()
 }
@@ -654,7 +652,7 @@ func (b *Bridge) assistantNudge(ctx context.Context, settings store.AssistantSet
 		if err != nil {
 			continue
 		}
-		text := fmt.Sprintf("【消息助理】事项「%s」有 %d 条新消息在队列中。请运行 `python3 ~/.codex/skills/dingtalk-message-context/scripts/pending_messages.py --thread %s --consume` 读取，并结合之前的进展继续处理。", queue[0].Title, len(queue), thread)
+		text := fmt.Sprintf("【消息助理】事项「%s」有 %d 条新消息在队列中。请运行 `python3 ~/.codex/skills/dingtalk-message-context/scripts/pending_messages.py --thread %s --consume` 读取，并结合之前的进展继续处理。\n%s", queue[0].Title, len(queue), thread, codex.OwnerAnalysisInstructions)
 		msg := im.Message{Address: wire, ID: "assistant-nudge:" + store.Hash(thread + fmt.Sprint(queue[len(queue)-1].ID))[:24], UserID: s.Owner, Text: text, IsDirect: personalDirect(wire)}
 		msg.InboxSources = []string{msg.ID}
 		if err = b.queueAssistantInput(s, msg); err != nil {
@@ -663,19 +661,6 @@ func (b *Bridge) assistantNudge(ctx context.Context, settings store.AssistantSet
 		state.mu.Lock()
 		state.nudged[thread] = time.Now().Unix()
 		state.mu.Unlock()
-	}
-}
-
-func (b *Bridge) assistantAutoSend(ctx context.Context, src im.AssistantSource, day string) {
-	items, err := b.store.AssistantItemsToSend(day)
-	if err != nil {
-		return
-	}
-	for _, x := range items {
-		if ctx.Err() != nil {
-			return
-		}
-		_ = b.sendAssistantReply(ctx, src, x, x.Reply, false)
 	}
 }
 

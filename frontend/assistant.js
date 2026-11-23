@@ -5,8 +5,8 @@
  const call=r=>api().Assistant(r);
  const errorText=e=>String(e?.message||e);
  const clock=ms=>ms?new Date(ms).toLocaleTimeString([], {hour:'2-digit',minute:'2-digit'}):'';
- const categories={all:'全部',need_me:'需要我处理',auto_reply:'可自动回复',no_reply:'无需回复',awaiting:'等待对方回复',session:'已派发会话',closed:'已完成 / 忽略'};
- const hints={all:'今天的全部事项',need_me:'需要你决策或亲自处理',auto_reply:'助理已拟好回复',no_reply:'通知、知会、他人对话',awaiting:'你问了别人、对方还没答复',session:'复杂事项由独立会话处理',closed:'已发送、已处理或忽略'};
+ const categories={all:'全部',need_me:'需要我处理',auto_reply:'已有结论',no_reply:'无需回复',awaiting:'等待对方回复',session:'已派发会话',closed:'已完成 / 忽略'};
+ const hints={all:'今天的全部事项',need_me:'需要你决策或亲自处理',auto_reply:'查看助理给你的结论',no_reply:'通知、知会、他人对话',awaiting:'你问了别人、对方还没答复',session:'复杂事项由独立会话处理',closed:'已发送、已处理或忽略'};
  const replyStates={sending:'发送中',sent:'已发送',unknown:'送达待核对',failed:'发送失败'};
  let view=null,filter='need_me',signature='',refreshAt=0,pending=false,generation=0,editing=null,expanded=new Set();
 
@@ -103,7 +103,7 @@
  function renderReviews(){
   const box=el('assistant-reviews');box.replaceChildren();
   const rows=view?.reviews||[];if(!rows.length)return;
-  const panel=node('details','panel assistant-review-panel');panel.open=true;panel.append(node('summary','',`会话产出的回复待你确认（${rows.length}）`));
+  const panel=node('details','panel assistant-review-panel');panel.open=true;panel.append(node('summary','',`会话分析结果（${rows.length}）`));
   for(const r of rows){
    const card=node('div','assistant-item');
    card.append(node('p','muted',(r.peer_name||r.peer)+' · '+(r.target?.includes(':group:')?'群聊':'单聊')+' · 会话 '+r.thread_id.slice(0,12)));
@@ -153,19 +153,18 @@
   field(grid,'等待回复超时（小时）',String(s.await_hours||4),v=>s.await_hours=Number(v)||4,{type:'number',help:'你问了别人、超过这个时间对方还没答复时，发一次本机通知并标红。等待中的会话跨天继续拉取（最多 7 天）。'});
   check(grid,'包含今天 @我 的群',s.mentions!==false,v=>s.mentions=v,'自动把今天 @你 的群加入拉取范围。');
   check(grid,'跳过机器人消息',s.skip_robots!==false,v=>s.skip_robots=v,'告警、通知类机器人消息不进入分析。');
-  check(grid,'复杂事项自动派发会话',s.auto_session!==false,v=>s.auto_session=v,'“需要我处理”且需要多步工作的事项，优先复用 Codex 客户端正在处理同一事项的会话，没有匹配时创建新会话；会话的回复仍需你确认后发送。');
+  check(grid,'复杂事项自动派发会话',s.auto_session!==false,v=>s.auto_session=v,'“需要我处理”且需要多步工作的事项，优先复用 Codex 客户端正在处理同一事项的会话，没有匹配时创建新会话；分析结果先给你查看。');
   check(grid,'会话空闲时提醒读取新消息',!!s.auto_deliver_idle,v=>s.auto_deliver_idle=v,'已派发会话的事项有新消息时只进队列；开启后，会话空闲时追加一条提醒让它去读队列。会话执行中不会被打断。');
-  check(grid,'可自动回复的事项直接发送',!!s.auto_send,v=>s.auto_send=v,'默认关闭：助理只拟稿，由你点“确认发送”。开启后将不经确认以你的身份发送，请谨慎。');
   box.append(grid);
   box.append(targetList('关注的人（单聊）',s.people,{placeholder:'输入姓名搜索通讯录',search:async q=>(await call({action:'search_people',query:q})).people||[]}));
   box.append(targetList('关注的群',s.groups,{placeholder:'输入群名搜索我加入的全部群',search:async q=>(await call({action:'search_groups',query:q})).groups||[],recent:async()=>(await call({action:'search_groups'})).groups||[]}));
   const rules=node('div','form-panel');
-  for(const [key,label,help] of [['profile','我的背景（可选）','例如职责、负责的系统、常见同事，帮助判断哪些需要你处理。'],['rule_need_me','“需要我处理”补充规则',''],['rule_auto_reply','“可自动回复”补充规则',''],['rule_no_reply','“无需回复”补充规则','']]){
+  for(const [key,label,help] of [['profile','我的背景（可选）','例如职责、负责的系统、常见同事，帮助判断哪些需要你处理。'],['rule_need_me','“需要我处理”补充规则',''],['rule_auto_reply','“已有结论”补充规则',''],['rule_no_reply','“无需回复”补充规则','']]){
    const f=node('div','field'),t=node('textarea');f.append(node('span','',label),t);t.rows=2;t.maxLength=2000;t.value=s[key]||'';t.oninput=()=>s[key]=t.value;if(help)f.append(node('small','',help));rules.append(f);
   }
   box.append(node('h4','','分流规则（自然语言）'),rules);
   const save=node('button','btn primary','保存设置');save.type='button';
-  save.onclick=()=>task(async()=>{if(s.auto_send&&!view?.settings?.auto_send&&!await confirmAction('开启自动发送？','“可自动回复”的事项将不经你确认、以你的钉钉身份直接发送。',{danger:true,confirmText:'开启'}))return;try{view=(await call({action:'save',settings:s})).view;show('');note('消息助理设置已保存。');signature='';render(true);}catch(e){show(e);throw e;}});
+  save.onclick=()=>task(async()=>{try{view=(await call({action:'save',settings:s})).view;show('');note('消息助理设置已保存。');signature='';render(true);}catch(e){show(e);throw e;}});
   box.append(save);
  }
 

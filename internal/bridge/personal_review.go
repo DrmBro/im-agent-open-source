@@ -175,7 +175,7 @@ func (b *Bridge) ReviewPersonalReply(ctx context.Context, r store.PersonalReview
 
 // 群@只人工审核；联系人自动回复规则仅适用于单聊。
 func (b *Bridge) personalAutoPeers(s store.Session) []string {
-	if !personalDirect(s.Address) {
+	if s.Address.IsPersonalQuestion() || !personalDirect(s.Address) {
 		return nil
 	}
 	return b.conn(s.Address.Connection).PersonalAutoReplyUsers

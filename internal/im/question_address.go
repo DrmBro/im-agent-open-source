@@ -16,6 +16,10 @@ func QuestionAddress(wire Address, id string) (Address, error) {
 	wire.ChatID = questionPrefix + base64.RawURLEncoding.EncodeToString([]byte(wire.ChatID)) + "." + id
 	return wire, nil
 }
+func (a Address) IsPersonalQuestion() bool {
+	return a.Channel == "dingtalk_personal" && strings.HasPrefix(a.ChatID, questionPrefix)
+}
+
 func (a Address) DeliveryAddress() (Address, error) {
 	if !strings.HasPrefix(a.ChatID, questionPrefix) {
 		return a, nil

@@ -42,6 +42,7 @@ func DefaultAssistantSettings() AssistantSettings {
 }
 
 func (a *AssistantSettings) Normalize() error {
+	a.AutoSend = false
 	if a.IntervalSeconds == 0 {
 		a.IntervalSeconds = 120
 	}
@@ -176,7 +177,9 @@ func (s *Store) AssistantSettings() (AssistantSettings, error) {
 	if err != nil {
 		return out, err
 	}
-	return out, json.Unmarshal([]byte(raw), &out)
+	err = json.Unmarshal([]byte(raw), &out)
+	out.AutoSend = false // 兼容旧配置；发送须由主人明确触发。
+	return out, err
 }
 
 func (s *Store) SaveAssistantSettings(a AssistantSettings) error {
@@ -649,23 +652,6 @@ func (s *Store) LinkAssistantSession(id, thread, failure string) error {
 
 func (s *Store) AssistantItemsNeedingSession(day string) ([]AssistantItem, error) {
 	rows, err := s.db.Query("SELECT "+assistantItemColumns+" FROM assistant_items WHERE day=? AND state='open' AND complex=1 AND category='need_me' AND thread_id='' AND session_error='' ORDER BY created_ms LIMIT 3", day)
-	if err != nil {
-		return nil, err
-	}
-	defer rows.Close()
-	out := []AssistantItem{}
-	for rows.Next() {
-		x, err := scanAssistantItem(rows)
-		if err != nil {
-			return nil, err
-		}
-		out = append(out, x)
-	}
-	return out, rows.Err()
-}
-
-func (s *Store) AssistantItemsToSend(day string) ([]AssistantItem, error) {
-	rows, err := s.db.Query("SELECT "+assistantItemColumns+" FROM assistant_items WHERE day=? AND state='open' AND category='auto_reply' AND reply<>'' AND reply_state='' ORDER BY created_ms LIMIT 5", day)
 	if err != nil {
 		return nil, err
 	}
