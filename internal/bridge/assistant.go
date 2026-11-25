@@ -516,7 +516,7 @@ func assistantSessionPrompt(x store.AssistantItem) string {
 	}
 	fmt.Fprintf(&b, "\n事项 ID：%s\n", x.ID)
 	b.WriteString(codex.OwnerAnalysisInstructions + "\n")
-	b.WriteString("对方后续在同一会话中发来的相关新消息不会直接插入本会话，而是进入消息助理队列。每次完成一个阶段或需要更多信息时，运行 `python3 ~/.codex/skills/dingtalk-message-context/scripts/pending_messages.py --thread <当前会话ID>` 查看是否有新消息（加 --consume 标记为已读）。需要原始上下文时，用同一技能的 read_context.py 读取。")
+	b.WriteString("对方后续在同一会话中发来的相关新消息不会直接插入本会话，而是进入消息助理队列。每次完成一个阶段或需要更多信息时，运行 `python3 ~/.codex/skills/dingtalk-source-chat-context/scripts/pending_messages.py --thread <当前会话ID>` 查看是否有新消息（加 --consume 标记为已读）。需要原始上下文时，用同一技能的 read_context.py 读取。")
 	return b.String()
 }
 
@@ -683,7 +683,7 @@ func (b *Bridge) assistantNudge(ctx context.Context, settings store.AssistantSet
 		if err != nil {
 			continue
 		}
-		text := fmt.Sprintf("【消息助理】事项「%s」有 %d 条新消息在队列中。请运行 `python3 ~/.codex/skills/dingtalk-message-context/scripts/pending_messages.py --thread %s --consume` 读取，并结合之前的进展继续处理。\n%s", queue[0].Title, len(queue), thread, codex.OwnerAnalysisInstructions)
+		text := fmt.Sprintf("【消息助理】事项「%s」有 %d 条新消息在队列中。请运行 `python3 ~/.codex/skills/dingtalk-source-chat-context/scripts/pending_messages.py --thread %s --consume` 读取，并结合之前的进展继续处理。\n%s", queue[0].Title, len(queue), thread, codex.OwnerAnalysisInstructions)
 		msg := im.Message{Address: wire, ID: "assistant-nudge:" + store.Hash(thread + fmt.Sprint(queue[len(queue)-1].ID))[:24], UserID: s.Owner, Text: text, IsDirect: personalDirect(wire)}
 		msg.InboxSources = []string{msg.ID}
 		if err = b.queueAssistantInput(s, msg); err != nil {
@@ -742,7 +742,7 @@ func (b *Bridge) sendAssistantReply(ctx context.Context, src im.AssistantSource,
 	}
 }
 
-// queueAssistantInput 复用个人收件账本：来源可被 dingtalk-message-context 技能定位，
+// queueAssistantInput 复用个人收件账本：来源可被 dingtalk-source-chat-context 技能定位，
 // 回复按自然语言草稿进入待审，不自动发给联系人。
 func (b *Bridge) queueAssistantInput(s store.Session, msg im.Message) error {
 	claimed, err := b.store.ClaimInbound(msg)

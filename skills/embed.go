@@ -2,5 +2,5 @@ package skills
 
 import _ "embed"
 
-//go:embed im-mention-context/SKILL.md
+//go:embed dingtalk-mention-request-clarification/SKILL.md
 var MentionContext string
